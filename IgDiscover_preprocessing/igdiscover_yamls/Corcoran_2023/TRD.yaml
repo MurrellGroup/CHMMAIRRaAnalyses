@@ -1,0 +1,320 @@
+## IgDiscover configuration
+
+# How many discovery iterations to run. If 0, no updated database is created,
+# but expression profiles are still computed. Unless working with a highly
+# incomplete starting database, a single iteration is usually sufficient.
+#
+iterations: 1
+
+
+# Type of sequences: Choose 'Ig' or 'TCR'.
+#
+sequence_type: TCR
+
+
+## Indexing settings
+# For sequences read-->barcode-->index or index-->barcode-->read,
+# indexing needs to be removed before barcode (UMI) extraction.
+# Reads with most frequent index are then used for downstream analysis.
+# You can only have index at one end.
+
+# If you have a library specific sequence (library index) at the 5' end,
+# set this to its length. Leave at 0 when you have no 5' index.
+#
+index_length_5prime: 0
+
+
+# Same as above, but for the 3' end of the sequence.
+# Leave at 0 when you have no 3' index.
+#
+index_length_3prime: 0
+
+
+## Barcoding settings
+
+# If you have a random barcode sequence (unique molecular identifier) at the 5' end,
+# set this to its length. Leave at 0 when you have no 5' barcode.
+#
+barcode_length_5prime: 0
+
+
+# Same as above, but for the 3' end of the sequence. Leave at 0 when you have no 3' barcode.
+# Currently, you cannot have a barcode in both ends, so at least one of the two settings
+# must be zero.
+#
+barcode_length_3prime: 21
+
+
+# When barcoding is enabled, sequences that have identical barcode and CDR3 are
+# collapsed into a single consensus sequence.
+# If you set this to false, no collapsing and consensus taking is done and
+# only the barcode is removed from each sequence.
+#
+barcode_consensus: true
+
+
+# When grouping by barcode and CDR3, the CDR3 location is either detected with a
+# regular expressions or a 'pseudo' CDR3 sequence is used, which is at a
+# pre-defined position within the sequence.
+#
+# Set this configuration option to a region like [-80, -60] to use a pseudo
+# CDR3 located at bases 80 to 60 counted from the 3' end. (Use negative numbers to
+# count from the 3' end, positive ones to count from the 5' end. The most 5'
+# base has index 0.)
+#
+# Set this to 'detect' (with quotation marks) in order to use CDR3s
+# detected by regular expression. This assumes that the input contains
+# VH sequences!
+#
+# Set this to false (no quotation marks) in order to *only* group by barcode, not by CDR3.
+#
+cdr3_location: [-130, -80]    # Works only with VH sequences!
+
+
+# When you use a RACE protocol, then the sequences have a run of G nucleotides in the beginning
+# which need to be removed when barcodes are used. If you use RACE, set this to true.
+# The G nucleotides are assumed to be in the 5' end (but after the barcode if it exists).
+#
+race_g: false
+
+
+## Primer-related settings
+
+# If set to true, it is assumed that the forward primer is always at the 5' end
+# of the first read and that the reverse primer is always at the 5' end of the
+# second read. If it can also be the other way, set this to false.
+# This setting has no effect if no primer sequences are defined below.
+#
+stranded: false
+
+
+# List of 5' primers
+#
+forward_primers:
+# - AGCTACAGAGTCCCAGGTCCA
+# - ACAGGYGCCCACTCYSAG
+# - TTGCTMTTTTAARAGGTGTCCAGTGTG
+# - CTCCCAGATGGGTCCTGTC
+# - ACCGTCCYGGGTCTTGTC
+# - CTGTTCTCCAAGGGWGTCTSTG
+# - CATGGGGTGTCCTGTCACA
+
+
+# List of 3' primers
+#
+reverse_primers:
+# - GCAGGCCTTTTTGGCCNNNNNGCCGATGGGCCCTTGGTGGAGGCTGA  # IgG
+# - GCAGGCCTTTTTGGCCNNNNNGGGGCATTCTCACAGGAGACGAGGGGGAAAAG  # IgM
+
+
+# Work only on this number of reads (for quick test runs). Set to false to
+# process all reads.
+#
+#limit: false
+
+
+# Filter out merged reads that are shorter than this length.
+#
+minimum_merged_read_length: 300
+
+
+# Read merging program. Choose either 'pear' or 'flash'.
+# pear merges more reads, but is slower.
+#
+#merge_program: pear
+
+
+# Maximum overlap (-M) for the flash read merger.
+# If you use pear, this is ignored.
+#
+flash_maximum_overlap: 300
+
+
+# Filter reads by expected error threshold computed by 'vsearch' tool.
+# Default is negative number (-1) that disables this filter.
+# filter_maxee: 15
+
+
+# Reverse complement reads using 'vsearch' tool.
+# Default is false
+reverse_complement: false
+
+
+# Do not mention the original FASTA or FASTQ sequence names in the
+# assigned.tab files, but instead use names <analysis_directory_name>_seq<number>,
+# where <number> is a running number starting at 1.
+#  true: yes, rename
+#  false: no, do not rename
+#
+rename: false
+
+
+# Whether debugging is enabled or not. Currently, if this is set to true,
+# some large intermediate files that would otherwise be deleted will be
+# kept.
+#
+debug: false
+
+
+# The "seed value" is in arbitrary number used to get reproducible
+# runs. Two runs that use the same software version, the same seed
+# and otherwise the same configuration will give identical results.
+#
+# Set this to false in order to use a different seed each run.
+# The results will then be not exactly reproducible.
+#
+seed: 1
+
+
+# Auxiliary file used by IgBLAST to define cdr3s.
+# If specified, IgDiscover will utilized the IgBLAST cdr3 column instead of computing
+# its own cdr3s.
+aux: human_gl.aux
+
+
+# If this parameter is not defined, gene names will be used to provide allelic groups.
+# If the parameter is set, its value will be used as the level of difference at which
+# allelic groups will be calculated by hierarchical clustering.
+# allelic_groups:
+
+# The preprocessing filter is always applied directly after running IgBLAST,
+# even if no gene discovery is requested.
+#
+preprocessing_filter:
+  v_coverage: 90   # Match must cover V gene by at least this percentage
+  j_coverage: 60   # Match must cover J gene by at least this percentage
+  v_evalue: 0.001  # Highest allowed V gene match E-value
+
+
+## Candidate discovery settings
+
+# When discovering new V genes, ignore whether a J gene has been assigned
+# and also ignore its %SHM.
+#  true: yes, ignore the J
+#  false: do not ignore J assignment, do not ignore its %SHM
+#
+ignore_j: false
+
+
+# When applying filters to sequences from libraries (i.e light chains)
+# that have no D disable filtering of Ds.
+ignore_d: true
+
+
+# Whether to use full V sequence for clustering (default true if not specified)
+# This is important for detection of end-variants in the CDR3 region.
+# When set to false clusters are build from Vs lacking CDR3 part.
+full_v_clusters: false
+
+
+# When clustering sequences to discover new genes, subsample to this number of
+# sequences. Higher is slower.
+#
+subsample: 1000
+
+
+# When computing the Ds_exact column, consider only D hits that
+# cover the reference D gene sequence by at least this percentage.
+#
+d_coverage: 70
+
+
+## V candidate filtering (germline filtering) settings
+
+# Filtering criteria applied to candidate sequences in all iterations except the last.
+#
+pre_germline_filter:
+  unique_cdr3s: 2            # Minimum number of unique CDR3s (within exact matches)
+  unique_js: 1               # Minimum number of unique J genes (within exact matches)
+  whitelist: true            # Add database sequences to the whitelist
+  cluster_size: 15           # Minimum number of sequences assigned to cluster
+  allow_stop: true           # Whether to allow non-productive sequences containing stop codons
+  cross_mapping_ratio: 0.02  # Threshold for removal of cross-mapping artifacts (set to 0 to disable)
+  clonotype_ratio: 0.12      # Required minimum ratio of clonotype counts between alleles of the same gene
+  exact_ratio: 0.12          # Required minimum ratio of "exact" counts between alleles of the same gene
+  full_exact_ratio: 0        # Minimum required ratio between exact and full exact sequence
+  cdr3_shared_ratio: 1.0     # Maximum allowed CDR3_shared_ratio
+  cdr3_len_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 length
+  cdr3_seq_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 sequence
+  unique_d_ratio: 0.3        # Minimum Ds_exact ratio between alleles
+  unique_d_threshold: 10     # Check Ds_exact ratio only if highest-expressed allele has at least this Ds_exact count
+
+
+# Filtering criteria applied to candidate sequences in the last iteration.
+# These should be more strict than the pre_germline_filter criteria.
+#
+germline_filter:
+  unique_cdr3s: 5            # Minimum number of unique CDR3s (within exact matches)
+  unique_js: 1               # Minimum number of unique J genes (within exact matches)
+  whitelist: true            # Add database sequences to the whitelist
+  cluster_size: 50           # Minimum number of sequences assigned to cluster
+  allow_stop: false          # Whether to allow non-productive sequences containing stop codons
+  cross_mapping_ratio: 0.02  # Threshold for removal of cross-mapping artifacts (set to 0 to disable)
+  clonotype_ratio: 0.12      # Required minimum ratio of clonotype counts between alleles of the same gene
+  exact_ratio: 0.12          # Required minimum ratio of "exact" counts between alleles of the same gene
+  full_exact_ratio: 0        # Minimum required ratio between exact and full exact sequence
+  cdr3_shared_ratio: 0.99    # Maximum allowed CDR3_shared_ratio
+  cdr3_len_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 length
+  cdr3_seq_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 sequence
+  unique_d_ratio: 0.3        # Minimum Ds_exact ratio between alleles
+  unique_d_threshold: 10     # Check Ds_exact ratio only if highest-expressed allele has at least this Ds_exact count
+  max_db_diff: 15            # Maximum allowed database differences (negative is disabled)
+
+
+# Filtering criteria applied to low expressed candidate sequences in the last iteration.
+#
+low_gene: ["TRAV23/DV6", "TRAV7", "TRAV18", "TRGV1", "TRAV8-6", "TRGV5P", "TRBV4-3"]
+low_germline_filter:
+  unique_cdr3s: 2            # Minimum number of unique CDR3s (within exact matches)
+  unique_js: 1               # Minimum number of unique J genes (within exact matches)
+  whitelist: true            # Add database sequences to the whitelist
+  cluster_size: 15           # Minimum number of sequences assigned to cluster
+  allow_stop: true           # Whether to allow non-productive sequences containing stop codons
+  cross_mapping_ratio: 0.02  # Threshold for removal of cross-mapping artifacts (set to 0 to disable)
+  clonotype_ratio: 0.12      # Required minimum ratio of clonotype counts between alleles of the same gene
+  exact_ratio: 0.12          # Required minimum ratio of "exact" counts between alleles of the same gene
+  full_exact_ratio: 0        # Minimum required ratio between exact and full exact sequence
+  cdr3_shared_ratio: 1.0     # Maximum allowed CDR3_shared_ratio
+  cdr3_len_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 length
+  cdr3_seq_maxfreq: 1.0      # Maximum allowed frequency of most common CDR3 sequence
+  unique_d_ratio: 0.3        # Minimum Ds_exact ratio between alleles
+  unique_d_threshold: 10     # Check Ds_exact ratio only if highest-expressed allele has at least this Ds_exact count
+
+
+# Expected barcodes_frequency filter
+# If table is provided use ranges for computed frequencies to filter out
+# obvious false positives (i.e usually highly expressed genes)
+expected_filter: ''
+
+
+## J discovery settings
+j_discovery:
+  allele_ratio: 0.2         # Required minimum ratio between alleles of a single gene
+  cross_mapping_ratio: 0.1  # Threshold for removal of cross-mapping artifacts.
+  propagate: false          # Use J genes discovered in iteration 1 in subsequent ones
+  v_max_errors: 1           # The maximum allowed number of errors in Vs
+
+## D discovery settings
+d_discovery:
+  allele_ratio: 0.2         # Required minimum ratio between alleles of a single gene
+  cross_mapping_ratio: 0.1  # Threshold for removal of cross-mapping artifacts.
+  v_max_errors: 1           # The maximum allowed number of errors in Vs
+
+# Upstream module
+# upstream: true/false if to run upstream module
+upstream: false
+
+
+# Haplotype module specific parameters
+# haplotype: true/false if to run haplotype module
+# haplotype_v_gene: which v_gene to use for haplotyping (empty automatic)
+# haplotype_j_gene: which j_gene to ue for haplotyping (empty automatic)
+# haplotype_vj_errors: maximum errors allowed in Vs and Js
+# plotallele: true/false if to run plotalleles module
+# plotallele_j_gene: which j_gene to use for haplotyping (default IGHJ6*02 and IGHJ6*03)
+haplotype: false
+haplotype_v_gene: ['']
+haplotype_j_gene: ['']
+haplotype_vj_errors: 1
+plotallele: false
+plotallele_j_gene: []
