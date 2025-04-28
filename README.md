@@ -22,13 +22,13 @@ Julia 1.10.5 for running the notebooks.
 - [PCR_conditions.ipynb](./notebooks/PCR_conditions.ipynb) : Plots this paper's PCR parameter modification dataset.
 - [databases.ipynb](./notebooks/databases.ipynb) : Plots pairwise edit distances between database V alleles.
 - [simulations.ipynb](./notebooks/simulations.ipynb) : Simulation of TRB and IGH VDJ datasets to produce ROCs.
-- [recombination.ipynb](./notebooks/recombination.ipynb) : Plots recombination information from real datasets. Produces the heatmaps, recombination percentage scatterplots, and database subsampling scatterplots.
+- [recombinations.ipynb](./notebooks/recombinations.ipynb) : Plots recombination information from real datasets. Produces the heatmaps, recombination percentage scatterplots, and database subsampling scatterplots.
 - [benchmark_speed.ipynb](./notebooks/benchmark_speed.ipynb) : Benchmarks the speed of CHMMAIRRa, USEARCH, and VSEARCH on real and simulated datasets.
 - [lineages.ipynb](./notebooks/lineages.ipynb) : Plots lineage information from a real dataset.
 - [summarize_seqcounts.ipynb](./notebooks/summarize_seqcounts.ipynb) : Gathers sequence count data from all datasets.
 
 ## Scripts
-- [run_CHMMAIRRa.sh](./scripts/run_CHMMAIRRa.sh) : Runs CHMMAIRRa on all 5 real datasets in the paper (4 published and 1 new).
+- [run_CHMMAIRRa.jl](./scripts/run_CHMMAIRRa.jl) : Runs CHMMAIRRa on all 5 real datasets in the paper (4 published and 1 new).
 - [run_CHMMAIRRa_db_subsampling.jl](./scripts/run_CHMMAIRRa_db_subsampling.jl) : Runs CHMMAIRRa on specific real TCR and IGH libraries with subsampled databases.
 - [run_benckmarks.jl](./scripts/run_benckmarks.jl) : Runs CHMMAIRRa and uchime on varying sizes of simulated IGH and TRB datasets.
 

@@ -9,7 +9,7 @@
 # run 20 different seeds per database size
 # D01 D04 EUR, D07 SAS, D14 EAS, D11 AFR
 
-# ran with IgDiscover22 v1.0.2
+# ran with IgDiscover22 v1.0.4
 
 using Pkg
 Pkg.activate(".")
@@ -107,10 +107,10 @@ for chain in ["IGH", "TRA", "TRB", "TRG"]
             for seed in seeds
                 @info "Processing $(igdiscover_run_dir) PG.$(size)Vs.$(seed)seed"
                 PG_subset_dir = "$(size)Vs-$(seed)seed-database"
-                #create_subsampled_db(igdiscover_run_dir, PG_subset_dir, size, seed)
-                #run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux)--threads $(threads) $(PG_subset_dir) reads/sequences_50000subsample.fasta.gz | pigz -c > final/$(size)Vs-$(seed)seed-airr.tsv.gz`)
-                #run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(PG_subset_dir) final/$(size)Vs-$(seed)seed-airr.tsv.gz | pigz -c > final/$(size)Vs-$(seed)seed-assigned.tsv.gz`)
-                #run(`conda run -n igdiscover igdiscover filter final/$(size)Vs-$(seed)seed-assigned.tsv.gz | pigz -c > final/$(size)Vs-$(seed)seed-filtered.tsv.gz`)
+                create_subsampled_db(igdiscover_run_dir, PG_subset_dir, size, seed)
+                run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux)--threads $(threads) $(PG_subset_dir) reads/sequences_50000subsample.fasta.gz | pigz -c > final/$(size)Vs-$(seed)seed-airr.tsv.gz`)
+                run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(PG_subset_dir) final/$(size)Vs-$(seed)seed-airr.tsv.gz | pigz -c > final/$(size)Vs-$(seed)seed-assigned.tsv.gz`)
+                run(`conda run -n igdiscover igdiscover filter final/$(size)Vs-$(seed)seed-assigned.tsv.gz | pigz -c > final/$(size)Vs-$(seed)seed-filtered.tsv.gz`)
                 args["V_fasta"] = "$(PG_subset_dir)/V.fasta"
                 args["assignments"] = "final/$(size)Vs-$(seed)seed-filtered.tsv.gz"
                 args["out"] = "final/CHMMAIRRa_out.PG.$(size)Vs.$(seed)seed.tsv.gz"
@@ -126,9 +126,9 @@ for chain in ["IGH", "TRA", "TRB", "TRG"]
 
         # PG
         @info "Processing $(igdiscover_run_dir) PG"
-        #run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) final/database/ reads/sequences_50000subsample.fasta.gz | pigz -c > final/PG-airr.tsv.gz;`)
-        #run(`conda run -n igdiscover igdiscover augment --read-cdr3 final/database/ final/PG-airr.tsv.gz | pigz -c > final/PG-assigned.tsv.gz;`)
-        #run(`conda run -n igdiscover igdiscover filter final/PG-assigned.tsv.gz | pigz -c > final/PG-filtered.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) final/database/ reads/sequences_50000subsample.fasta.gz | pigz -c > final/PG-airr.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover augment --read-cdr3 final/database/ final/PG-airr.tsv.gz | pigz -c > final/PG-assigned.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover filter final/PG-assigned.tsv.gz | pigz -c > final/PG-filtered.tsv.gz;`)
         args["V_fasta"] = "final/database/V.fasta"
         args["assignments"] = "final/PG-filtered.tsv.gz"
         args["out"] = "final/CHMMAIRRa_out.PG.tsv.gz"
@@ -140,26 +140,26 @@ for chain in ["IGH", "TRA", "TRB", "TRG"]
                     count_chimeric_segments = args["count-chimeric-segments"],
                     chimeric_alignments = args["chimeric-alignments"])
         ## IMGT db comparison
-        #@info "Processing $(igdiscover_run_dir) IMGT db"
-        ##run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(IMGT_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/IMGT-V-QUEST-F+P-airr.tsv.gz;`)
-        ##run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(IMGT_dbs[chain]) final/IMGT-V-QUEST-F+P-airr.tsv.gz | pigz -c > final/IMGT-V-QUEST-F+P-assigned.tsv.gz;`)
-        ##run(`conda run -n igdiscover igdiscover filter final/IMGT-V-QUEST-F+P-assigned.tsv.gz | pigz -c > final/IMGT-V-QUEST-F+P-filtered.tsv.gz;`)
-        #args["V_fasta"] = "$(IMGT_dbs[chain])/V.fasta"
-        #args["assignments"] = "final/IMGT-V-QUEST-F+P-filtered.tsv.gz"
-        #args["out"] = "final/CHMMAIRRa_out.IMGT-V-QUEST-F+P.tsv.gz"
-        #args["chimeric-alignments"] = "final/CHMMAIRRa_out.IMGT-V-QUEST-F+P.fasta"
-        #CHMMAIRRa.detect_chimeras_from_files(args["V_fasta"], args["assignments"], args["out"],
-        #            receptor = args["receptor"],
-        #            align_database = args["align-database"],
-        #            detailed = args["detailed"],
-        #            count_chimeric_segments = args["count-chimeric-segments"],
-        #            chimeric_alignments = args["chimeric-alignments"])
+        @info "Processing $(igdiscover_run_dir) IMGT db"
+        run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(IMGT_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/IMGT-V-QUEST-F+P-airr.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(IMGT_dbs[chain]) final/IMGT-V-QUEST-F+P-airr.tsv.gz | pigz -c > final/IMGT-V-QUEST-F+P-assigned.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover filter final/IMGT-V-QUEST-F+P-assigned.tsv.gz | pigz -c > final/IMGT-V-QUEST-F+P-filtered.tsv.gz;`)
+        args["V_fasta"] = "$(IMGT_dbs[chain])/V.fasta"
+        args["assignments"] = "final/IMGT-V-QUEST-F+P-filtered.tsv.gz"
+        args["out"] = "final/CHMMAIRRa_out.IMGT-V-QUEST-F+P.tsv.gz"
+        args["chimeric-alignments"] = "final/CHMMAIRRa_out.IMGT-V-QUEST-F+P.fasta"
+        CHMMAIRRa.detect_chimeras_from_files(args["V_fasta"], args["assignments"], args["out"],
+                    receptor = args["receptor"],
+                    align_database = args["align-database"],
+                    detailed = args["detailed"],
+                    count_chimeric_segments = args["count-chimeric-segments"],
+                    chimeric_alignments = args["chimeric-alignments"])
 
         # IMGT F db comparison
         @info "Processing $(igdiscover_run_dir) IMGT F db"
-        #run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(IMGT_F_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/IMGT-V-QUEST-F-airr.tsv.gz;`)
-        #run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(IMGT_F_dbs[chain]) final/IMGT-V-QUEST-F-airr.tsv.gz | pigz -c > final/IMGT-V-QUEST-F-assigned.tsv.gz;`)
-        #run(`conda run -n igdiscover igdiscover filter final/IMGT-V-QUEST-F-assigned.tsv.gz | pigz -c > final/IMGT-V-QUEST-F-filtered.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(IMGT_F_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/IMGT-V-QUEST-F-airr.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(IMGT_F_dbs[chain]) final/IMGT-V-QUEST-F-airr.tsv.gz | pigz -c > final/IMGT-V-QUEST-F-assigned.tsv.gz;`)
+        run(`conda run -n igdiscover igdiscover filter final/IMGT-V-QUEST-F-assigned.tsv.gz | pigz -c > final/IMGT-V-QUEST-F-filtered.tsv.gz;`)
         args["V_fasta"] = "$(IMGT_dbs[chain])/V.fasta"
         args["assignments"] = "final/IMGT-V-QUEST-F-filtered.tsv.gz"
         args["out"] = "final/CHMMAIRRa_out.IMGT-V-QUEST-F.tsv.gz"
@@ -173,9 +173,9 @@ for chain in ["IGH", "TRA", "TRB", "TRG"]
 
         if chain == "IGH"
             @info "Processing $(igdiscover_run_dir) OGRDB"
-            #run_igblastwrap_from_files(OGRDB_dir, "reads/sequences_50000subsample.fasta.gz", "final/OGRDB-airr.tsv.gz", sequence_type = "Ig", human_gl_aux = human_gl_aux, threads = threads)
-            #run_augment_from_files(OGRDB_dir, "final/OGRDB-airr.tsv.gz", "final/OGRDB-assigned.tsv.gz")
-            #run_filter_from_files("final/OGRDB-assigned.tsv.gz", "final/OGRDB-filtered.tsv.gz")
+            run_igblastwrap_from_files(OGRDB_dir, "reads/sequences_50000subsample.fasta.gz", "final/OGRDB-airr.tsv.gz", sequence_type = "Ig", human_gl_aux = human_gl_aux, threads = threads)
+            run_augment_from_files(OGRDB_dir, "final/OGRDB-airr.tsv.gz", "final/OGRDB-assigned.tsv.gz")
+            run_filter_from_files("final/OGRDB-assigned.tsv.gz", "final/OGRDB-filtered.tsv.gz")
             args["V_fasta"] = "$(OGRDB_dir)/V.fasta"
             args["assignments"] = "final/OGRDB-filtered.tsv.gz"
             args["out"] = "final/CHMMAIRRa_out.OGRDB.tsv.gz"
@@ -191,9 +191,9 @@ for chain in ["IGH", "TRA", "TRB", "TRG"]
         if chain != "IGH"
             # for KITDB
             @info "Processing $(igdiscover_run_dir) KITDB"
-            #run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(KI_TCR_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/KITDB-airr.tsv.gz;`)
-            #run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(KI_TCR_dbs[chain]) final/KITDB-airr.tsv.gz | pigz -c > final/KITDB-assigned.tsv.gz;`)
-            #run(`conda run -n igdiscover igdiscover filter final/KITDB-assigned.tsv.gz | pigz -c > final/KITDB-filtered.tsv.gz;`)
+            run(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(KI_TCR_dbs[chain]) reads/sequences_50000subsample.fasta.gz | pigz -c > final/KITDB-airr.tsv.gz;`)
+            run(`conda run -n igdiscover igdiscover augment --read-cdr3 $(KI_TCR_dbs[chain]) final/KITDB-airr.tsv.gz | pigz -c > final/KITDB-assigned.tsv.gz;`)
+            run(`conda run -n igdiscover igdiscover filter final/KITDB-assigned.tsv.gz | pigz -c > final/KITDB-filtered.tsv.gz;`)
             args["V_fasta"] = "$(KI_TCR_dbs[chain])/V.fasta"
             args["assignments"] = "final/KITDB-filtered.tsv.gz"
             args["out"] = "final/CHMMAIRRa_out.KITDB.tsv.gz"
