@@ -1,6 +1,6 @@
-using CSV, DataFrames, FASTX, Compose, Colors, MolecularEvolution, StringDistances, StringAlgorithms, Distributions, CodecZlib
+using CSV, DataFrames, FASTX, Compose, Colors, MolecularEvolution, StringDistances, StringAlgorithms, Distributions, CodecZlib, StatsBase
 
-function read_fasta(filepath::String)
+function read_fasta(filepath::String)::Tuple{Vector{String}, Vector{String}}
     reader = FASTX.FASTA.Reader(open(filepath, "r"))
     fasta_in = [record for record in reader]
     close(reader)
@@ -62,7 +62,7 @@ function fasttreedbl_nuc_wrapper(seqs::Vector{String}, seqnames::Vector{String};
    end
 end
 
-function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads())
+function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads(), parameters::Vector{String} = String[])::Tuple{Vector{String}, Vector{String}}
     # Find mafft executable
     mafft_path = if isnothing(mafft)
         Sys.which("mafft")
@@ -77,14 +77,50 @@ function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Un
     mktempdir() do mydir
         input_fasta = joinpath(mydir, "sequences.fasta")
         write_fasta(input_fasta, degap.(seqs), seq_names = seqnames)
-        cmd = `$(mafft_path) --thread $(threads) $(input_fasta)`
+
+        cmd = [mafft_path, "--thread", string(threads)]
+        if length(parameters) > 0
+            push!(cmd, parameters...)
+        end
+        push!(cmd, input_fasta)
+        
         @info "Running $(cmd)"
         io = IOBuffer()
-        run(pipeline(cmd, stdout=io, stderr=devnull))
+        run(pipeline(Cmd(cmd), stdout=io, stderr=devnull))
         stdo = String(take!(io))
         results = split.(split(stdo, ">")[2:end], "\n", limit = 2)
         names = map(x->string(x[1]), results)
         seqs = [uppercase(replace(result[2], "\n" => "")) for result in results ]
+        return names, seqs
+    end
+end
+
+function muscle_wrapper(seqs::Vector{String}, seqnames::Vector{String}; muscle::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads(), parameters::Vector{String} = String[])::Tuple{Vector{String}, Vector{String}}
+    # Find muscle executable
+    muscle_path = if isnothing(muscle)
+        Sys.which("muscle")
+    else
+        muscle
+    end
+
+    if isnothing(muscle_path)
+        error("Could not find muscle executable. Please ensure muscle is installed and in your PATH, or provide the path.")
+    end
+
+    mktempdir() do mydir
+        input_fasta = joinpath(mydir, "sequences.fasta")
+        output_fasta = joinpath(mydir, "aligned.fasta")
+        write_fasta(input_fasta, degap.(seqs), seq_names = seqnames)
+        cmd = [muscle_path]
+        if length(parameters) > 0
+            push!(cmd, parameters...)
+        end
+        push!(cmd, ["-align", input_fasta, "-output", output_fasta, "-threads", string(threads)]...)
+        println(cmd)
+        @info "Running $(cmd)"
+        run(pipeline(Cmd(cmd), stderr=devnull))
+        names, seqs = read_fasta(output_fasta)
+        seqs = [uppercase(seq) for seq in seqs]
         return names, seqs
     end
 end
@@ -360,4 +396,59 @@ function run_filter_from_files(assignments_path, out_path)
             write(io, take!(output))
         end
     end
+end
+
+
+function smooth_entropy(alignment::Vector{String}, pseudocount=1.0)
+    if isempty(alignment)
+        return Float64[]
+    end
+    
+    n_sites = length(alignment[1])
+    n_seqs = length(alignment)
+    entropies = Float64[]
+    
+    for site in 1:n_sites
+        # Extract characters at this site
+        site_chars = [alignment[i][site] for i in 1:n_seqs]
+        
+        # Count frequencies
+        counts = countmap(site_chars)
+        
+        # Add pseudocounts for all possible nucleotides
+        nucleotides = ['A', 'T', 'G', 'C']
+        total = n_seqs + length(nucleotides) * pseudocount
+        
+        entropy = 0.0
+        for nuc in nucleotides
+            freq = (get(counts, nuc, 0) + pseudocount) / total
+            entropy -= freq * log2(freq)
+        end
+        
+        push!(entropies, entropy)
+    end
+    
+    return entropies
+end
+
+function add_split_normpos_columns!(df::DataFrame, Vgene2length::Dict)::DataFrame
+    recombinations_mask = (.! ismissing.(df.recombinations_degapped)) .& df.chimeric
+    parsed_recombinations = parse_recombinations_string.(df.recombinations_degapped[recombinations_mask])
+    df[!,"from_split_normpos"] .= -1.0
+    df[!,"to_split_normpos"] .= -1.0
+    df[recombinations_mask,"from_split_normpos"] .=  map(x -> x[1].left_pos_degapped / Vgene2length[split(x[1].left_allele, "*")[1]], parsed_recombinations)
+    df[recombinations_mask,"to_split_normpos"] .= map(x -> x[1].right_pos_degapped / Vgene2length[split(x[1].right_allele, "*")[1]], parsed_recombinations)
+    return df
+end
+
+function seeded_subsample_inds(vec_length::Int, seed::Int, subsample::Int)::Vector
+    return shuffle(MersenneTwister(seed), 1:vec_length)[1:subsample]
+end
+
+function discrete_agreement(x_arr, y_arr; threshold = 0.95)
+    UR = sum((x_arr .> threshold) .& (y_arr .> threshold))
+    UL = sum((x_arr .< threshold) .& (y_arr .> threshold))
+    LR = sum((x_arr .> threshold) .& (y_arr .< threshold))
+    LL = sum((x_arr .< threshold) .& (y_arr .< threshold))
+    return (UR = Int(UR), UL = Int(UL), LR = Int(LR), LL = Int(LL), agreement = UR / (UR + UL + LR + LL))
 end
