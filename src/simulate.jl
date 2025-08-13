@@ -17,15 +17,15 @@ function random_seqpair(names::Vector{String}, seqs::Vector{String}, rng)
     return names[rand_inds], seqs[rand_inds]
 end
 
-function get_breakpoint(seq::String, rng; min_pos::Union{Int, Float64} = 0.0, max_pos::Union{Int, Float64} = 1.0)
+function get_breakpoint(seqlen::Int, rng; min_pos::Union{Int, Float64} = 0.0, max_pos::Union{Int, Float64} = 1.0)
     if ismissing(max_pos)
-        max_pos = length(seq)
+        max_pos = seqlen
     end
     if (typeof(min_pos) == Float64) & (min_pos < 1)
-        min_pos = floor(min_pos * length(seq))
+        min_pos = floor(min_pos * seqlen)
     end
     if (typeof(max_pos) == Float64) & (max_pos <= 1)
-        max_pos = floor(max_pos * length(seq))
+        max_pos = floor(max_pos * seqlen)
     end
     if min_pos == max_pos
         return Int(min_pos)
@@ -52,25 +52,89 @@ function add_random_shm(seq::String, rng; min_shm::Float64 = 0.01, max_shm::Floa
     return join(seq)
 end
 
-function add_illumina_errors(seqs::Vector{String})
-    if ! (length(unique(length.(seqs))) == 1)
-        _, seqs = mafft_wrapper(seqs, [i for i in 1:length(seqs)])
+
+"""
+Adds illumina MiSeq errors to a set of sequences in 3 steps: 
+1. Add prefix and suffix to each sequence to make it the length of the real template amplified by the Illumina sequencer
+2. Generate paired end reads with errors using art_illumina
+3. Merge the two reads into a single read using pear
+
+The output is a vector of tuples, each containing the sequence ID, sequence, and quality score for each read.
+
+Note:
+- specifically for Illumina MiSeq v3
+- generates 250bp reads
+"""
+function add_illumina_errors(seqs::Vector{String}, prefix_nucs::Int64, suffix_nucs::Int64; art_illumina::Union{String, Nothing} = nothing, pear_path::Union{String, Nothing} = nothing, gene::Char = 'v', padding_dists = Dict("before_V" => 40, 'v' => 290, 'd' => 20, 'j' => 50, "after_J" => 40), V_seq = "", D_seq = "", J_seq = "")
+
+    art_illumina_path = if isnothing(art_illumina)
+        Sys.which("art_illumina")
+    else
+        art_illumina
     end
-    l = length(seqs[1])
-    mktempdir() do dir
-        write_fasta("$(dir)/ref.fasta", seqs)
-        cmd = `grinder -reference_file $(dir)/ref.fasta  -length_bias 0 -unidirectional 1 -total_reads $(length(seqs)) -read_dist $(l) -mutation_dist poly4 3e-3 3.3e-8 -output_dir $(dir)`
-        run(cmd)
-        _, seqs = read_fasta("$(dir)/grinder-reads.fa")
-        return seqs
+
+    if isnothing(art_illumina_path)
+        error("Could not find art_illumina executable. Please ensure art_illumina is installed and in your PATH, or provide the path.")
+    end
+
+    seqs = degap.(seqs)
+    prefix_string, suffix_string = "", ""
+    # 1. Add prefix and suffix
+    # we need to pad the sequences to place them in the correct positions in the amplicon for realistic errßor simulation
+    if gene == 'v'
+        prefix_string = join([rand_nuc() for i in 1:padding_dists["before_V"]])
+        suffix_string = string(D_seq, J_seq, join([rand_nuc() for i in 1:padding_dists["after_J"]]))
+    elseif gene == 'd'
+        prefix_string = string(join([rand_nuc() for i in 1:padding_dists["before_V"]]), V_seq)
+        suffix_string = string(J_seq, join([rand_nuc() for i in 1:padding_dists["after_J"]]))
+    elseif gene == 'j'
+        prefix_string = string(join([rand_nuc() for i in 1:padding_dists["before_V"]]), V_seq, D_seq)
+        suffix_string = join([rand_nuc() for i in 1:padding_dists["after_J"]])
+    else
+        error("Invalid gene: $(gene)")
+    end
+
+    seqs = [string(prefix_string, seq, suffix_string) for seq in seqs]
+    total_prefix_length = length(prefix_string)
+    total_suffix_length = length(suffix_string)
+    
+
+    mktempdir() do mydir
+        # 2. Generate paired end reads with errors
+        input_fasta = joinpath(mydir, "sequences.fasta")
+        write_fasta(input_fasta, seqs, seq_names = ["$(i)" for i in 1:length(seqs)])
+        cmd = `$(art_illumina_path) -k 0 -ss MSv3 -amp -p -i $(input_fasta) -o $(joinpath(mydir, "amplicon")) -f 1 -l 250`
+        io = IOBuffer()
+        run(pipeline(cmd, stdout=io, stderr=devnull))
+        cp("$(mydir)/amplicon1.fq", "/home/mchernys/Downloads/amplicon1.fq", force = true)
+        cp("$(mydir)/amplicon2.fq", "/home/mchernys/Downloads/amplicon2.fq", force = true)
+        # 3. Merge generated reads
+        merged_sequence_ids, merged_sequences, merged_qualities = read_fastq(merge_fastqs_from_files("$(mydir)/amplicon1.fq", "$(mydir)/amplicon2.fq", "$(mydir)/merged", pear = pear_path))
+        write_fasta("/home/mchernys/Downloads/merged.fasta", merged_sequences, seq_names = merged_sequence_ids)
+        merged_sequences = [seq[total_prefix_length + 1 : end - total_suffix_length] for seq in merged_sequences]
+        return merged_sequences
     end
 end
 
+function merge_fastqs_from_files(r1_filepath::String, r2_filepath::String, merged_filepath::String; pear::Union{String, Nothing} = nothing)
+    pear_path = if isnothing(pear)
+        Sys.which("pear")
+    else
+        pear
+    end
 
-function add_shm(seqs::Vector{String}, rng; min_shm::Float64 = 0.01, max_shm::Float64 = 0.2, shm_method::String = "uniform_random", shazam_implementation::String = "parallel")
-    if shm_method == "uniform_random"
+    if isnothing(pear_path)
+        error("Could not find pear executable. Please ensure pear is installed and in your PATH, or provide the path.")
+    end
+    run(Cmd(String.([split(pear_path, " ")..., "-f", r1_filepath, "-r", r2_filepath, "-o", merged_filepath])))
+    return merged_filepath * ".assembled.fastq"
+end
+
+
+function add_variations(seqs::Vector{String}, rng; min_shm::Float64 = 0.01, max_shm::Float64 = 0.2, variation_method::String = "uniform_random", shazam_implementation::String = "parallel", prefix_nucs::Int64 = 40, suffix_nucs::Int64 = 80, gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "")
+    if variation_method == "uniform_random"
         seqs = map(seq -> add_random_shm(seq, rng, min_shm = min_shm, max_shm = max_shm), seqs) # add shm
-    elseif shm_method == "shazam"
+    elseif variation_method == "shazam"
         if min_shm != max_shm
             error("min_shm and max_shm must be the same for shazam shmulateSeq")
         end
@@ -84,36 +148,46 @@ function add_shm(seqs::Vector{String}, rng; min_shm::Float64 = 0.01, max_shm::Fl
         else
             error("Invalid shazam_implementation: $(shazam_implementation). Use 'original', 'vectorized', or 'parallel'")
         end
+    elseif variation_method == "art_illumina"
+        seqs = add_illumina_errors(seqs, prefix_nucs, suffix_nucs, pear_path = "conda run -n igdiscover pear", gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq)
     else
-        error("Invalid shm_method: $(shm_method)")
+        error("Invalid variation_method: $(variation_method)")
     end
     return seqs
 end
 
 
-function add_shazam_shm_parallel(seqs::Vector{String}, shm_rate::Float64; cores::Int = 10)
-    seqs = [replace(seq, '-' => '.') for seq in seqs]
+function add_shazam_shm_parallel(seqs::Vector{String}, shm_rate::Float64; cores::Int = 5)
+    # if the sequence is aligned, remove those gaps, apply shazam, then add the gaps back
+    nongap_positions = findall.(x->x != '-', seqs)
+    degapped_seqs = degap.(seqs)
 
-    local res = ""
-    mktempdir() do dir
+    res = mktempdir() do dir
         open("$(dir)/seqs.txt", "w") do f
-            write(f, join(seqs, "\n"))
+            write(f, join(degapped_seqs, "\n"))
         end
         r_string = """
         library(shazam)
         library(parallel)
         arr = readLines("$(dir)/seqs.txt")
         # Use parallel processing for large datasets
-        cl <- makeCluster($(cores))
+        cl <- makeCluster($(cores), type = "FORK")
         clusterEvalQ(cl, library(shazam))
         new_arr = parSapply(cl, arr, function(seq) shmulateSeq(seq, $(shm_rate), frequency = TRUE))
         stopCluster(cl)
         writeLines(paste(new_arr, collapse = "\n"), "$(dir)/output.txt")"""
         run(`Rscript -e $r_string`) 
-        res = read("$(dir)/output.txt", String)
+        return read("$(dir)/output.txt", String)
     end
-    res = [replace(seq, '.' => '-') for seq in String.(split(strip(res), "\n"))]
-    return res
+    res = String.(split(strip(res), "\n"))
+
+    for i in 1:length(seqs)
+        seq = collect(seqs[i])
+        seq[nongap_positions[i]] = collect(res[i])
+        seqs[i] = String(seq)
+    end
+
+    return seqs
 end
 
 function add_shazam_shm_vectorized(seqs::Vector{String}, shm_rate::Float64)
@@ -163,36 +237,69 @@ end
 # pick n random sequences from the reference set and add shm to them
 # shm rate chosen uniformly between min_shm and max_shm
 # assumes sequences are already aligned
-function random_nonchimeras(names::Vector{String}, seqs::Vector{String}, rng; n::Int = 1, min_shm::Float64 = 0.2, max_shm::Float64 = 0.2, shm_method::String = "uniform_random")
-    if length(unique(length.(seqs))) != 1
-        error("All sequences must be the same length. Please align them and try again.")
-    end
+function random_nonchimeras(names::Vector{String}, seqs::Vector{String}, rng; n::Int = 1, min_shm::Float64 = 0.2, max_shm::Float64 = 0.2, variation_method::String = "uniform_random", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", pre_aligned::Bool = true)
+    #if length(unique(length.(seqs))) != 1
+    #    error("All sequences must be the same length. Please align them and try again.")
+    #end
     rand_inds = sample(rng, 1:length(names), n, replace = true)
     rand_names, rand_seqs = names[rand_inds], seqs[rand_inds]
-    rand_seqs = add_shm(rand_seqs, rng, min_shm = min_shm, max_shm = max_shm, shm_method = shm_method)
+    rand_seqs = add_variations(rand_seqs, rng, min_shm = min_shm, max_shm = max_shm, variation_method = variation_method, gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq)
     rand_names = ["$(rand_names[i])_$(i)" for i in 1:length(rand_names)]
     return rand_names, rand_seqs
 end
 
 # Generate n chimeras by taking random sequences, cutting at a random breakpoint between min_pos and max_pos, and stitching together the cut sequences
 # assumes sequences are already aligned
-function random_chimeras(names::Vector{String}, seqs::Vector{String}, rng; min_pos::Union{Int, Float64} = 0.0, max_pos::Union{Int, Float64} = 1.0, n::Int = 1, min_shm1::Float64 = 0.0, max_shm1::Float64 = 0.2, min_shm2::Float64 = 0.0, max_shm2::Float64 = 0.2, shm_method::String = "uniform_random")
-    if length(unique(length.(seqs))) != 1
-        error("All sequences must be the same length. Please align them and try again.")
-    end
-    rand_refs_list = [random_seqpair(names, seqs, rng) for i in 1:n] # choose seqeunces
-    seqs1 = add_shm(map(rand_refs -> rand_refs[2][1], rand_refs_list), rng, min_shm = min_shm1, max_shm = max_shm1, shm_method = shm_method)
-    seqs2 = add_shm(map(rand_refs -> rand_refs[2][2], rand_refs_list), rng, min_shm = min_shm1, max_shm = max_shm1, shm_method = shm_method)
-
-
+function random_chimeras(names::Vector{String}, seqs::Vector{String}, rng; min_pos::Union{Int, Float64} = 0.0, max_pos::Union{Int, Float64} = 1.0, n::Int = 1, min_shm1::Float64 = 0.0, max_shm1::Float64 = 0.2, min_shm2::Float64 = 0.0, max_shm2::Float64 = 0.2, variation_method::String = "uniform_random", V_seq = "", D_seq = "", J_seq = "", gene::Char = 'v', ig_seqtype = "TCR", pre_aligned::Bool = true)
+    # we generate 2x as many sequences so we can throw away the ones that don't align well with IgBLAST and then take n
+    preliminary_n = n * 100
+    rand_refs_list = [random_seqpair(names, seqs, rng) for i in 1:preliminary_n] # choose seqeunces
+    seqs1 = add_variations(map(rand_refs -> rand_refs[2][1], rand_refs_list), rng, min_shm = min_shm1, max_shm = max_shm1, variation_method = variation_method, gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq)
+    seqs2 = add_variations(map(rand_refs -> rand_refs[2][2], rand_refs_list), rng, min_shm = min_shm2, max_shm = max_shm2, variation_method = variation_method, gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq)
     rand_refs_list = [[rand_refs_list[i][1], [seqs1[i], seqs2[i]]] for i in 1:length(rand_refs_list)] 
 
-    #rand_refs_list = map(rand_refs -> [rand_refs[1], [add_shm(rand_refs[2][1], rng, min_shm = min_shm1, max_shm = max_shm1, shm_method = shm_method), add_shm(rand_refs[2][2], rng, min_shm = min_shm2, max_shm = max_shm2, shm_method = shm_method)]], rand_refs_list) # add shm
-    breakpoint_positions = [get_breakpoint(rand_refs[2][1], rng, min_pos = min_pos, max_pos = max_pos) for rand_refs in rand_refs_list] # choose breakpoints
-    chimeric_seqs = [string(rand_refs[2][1][1:curr_breakpoint_position], rand_refs[2][2][curr_breakpoint_position + 1:end]) for (rand_refs, curr_breakpoint_position) in zip(rand_refs_list, breakpoint_positions)] # concatenate seq fragments
-    chimeric_names = ["$(rand_refs[1][1])_1to$(curr_breakpoint_position)_$(rand_refs[1][2])_$(curr_breakpoint_position)toEnd_$(i)" for (i, rand_refs, curr_breakpoint_position) in zip(1:length(rand_refs_list), rand_refs_list, breakpoint_positions)]
-    return chimeric_names, chimeric_seqs, [el[1] for el in rand_refs_list], [el[2] for el in rand_refs_list], breakpoint_positions
+    recombined = [recombine_seqs(rand_refs[1][1], rand_refs[1][2], rand_refs[2][1], rand_refs[2][2], rng, min_pos, max_pos, pre_aligned = pre_aligned) for rand_refs in rand_refs_list]
+    recombined_names, recombined_seqs, recombined_breakpoints = map(x-> x[2], recombined), map(x-> x[1], recombined), map(x-> x[3], recombined)
+    recombined_names = ["$(recombined_names[i])_$(i)" for i in 1:length(recombined_names)]
+
+    if ! pre_aligned
+        # run igblast so we can exclude chimeras that don't align to the reference set
+        assignments = DataFrame()
+        if gene == 'v'
+            assignments = igblast_v(recombined_seqs, recombined_names, degap.(seqs), namesCS, D_seq = D_seq, J_seq = J_seq, ig_seqtype = ig_seqtype)
+        elseif gene == 'd'
+            assignments = igblast_d(recombined_seqs, recombined_names, degap.(seqs), names, V_seq = V_seq, J_seq = J_seq, ig_seqtype = ig_seqtype)
+        elseif gene == 'j'
+            assignments = igblast_j(recombined_seqs, recombined_names, degap.(seqs), names, V_seq = V_seq, D_seq = D_seq, ig_seqtype = ig_seqtype)
+        end
+        assignments = assignments[ .! ismissing.(assignments[!, "$(gene)_call"]),:]
+        assignments[!, "$(gene)_covered"] .= [covered(record["$(gene)_germline_alignment"], seqs[names .== record["$(gene)_call"]][1]) for record in eachrow(assignments)]
+        covered_mask = assignments[!, "$(gene)_covered"] .> 90.0
+        chimeric_names, chimeric_seqs, breakpoint_positions = recombined_names[covered_mask][1:n], recombined_seqs[covered_mask][1:n], recombined_breakpoints[covered_mask][1:n]
+        return chimeric_names, chimeric_seqs, breakpoint_positions
+    else
+        return recombined_names, recombined_seqs, recombined_breakpoints
+    end
 end
+
+function recombine_seqs(name1::String, name2::String, seq1::String, seq2::String, rng, min_pos, max_pos; pre_aligned::Bool = true)
+    if ! pre_aligned
+        scoremodel = AffineGapScoreModel(EDNAFULL, gap_open=-5, gap_extend=-1)
+        res = pairalign(GlobalAlignment(), seq1, seq2, scoremodel)
+        aligned_seq1 = res.aln.a.seq
+        aligned_seq2 = res.aln.b
+        breakpoint = get_breakpoint(length(aligned_seq1), rng, min_pos = min_pos, max_pos = max_pos)
+        recombined_seq = degap(string(aligned_seq1[1:breakpoint], aligned_seq2[breakpoint + 1:end]))
+        recombined_name = "$(name1)_1to$(breakpoint)_$(name2)_$(breakpoint)toEnd" 
+    else
+        breakpoint = get_breakpoint(length(seq1), rng, min_pos = min_pos, max_pos = max_pos)
+        recombined_seq = string(seq1[1:breakpoint], seq2[breakpoint + 1:end])
+        recombined_name = "$(name1)_1to$(breakpoint)_$(name2)_$(breakpoint)toEnd" 
+    end
+    return recombined_seq, recombined_name, breakpoint
+end
+
+
 
 function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Vector{String}, db_seqs::Vector{String}; search::String = "usearch", mode = "sensitive")
     """
@@ -210,7 +317,6 @@ function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Ve
         cmd = `usearch -uchime2_ref $(query_fasta_path) -db $(db_fasta_path) -uchimeout $(outpath) -strand plus -mode $(mode)`
         println(cmd)
         run(cmd)
-        cp(outpath, "/home/mchernys/Downloads/usearch_uchime_out.txt", force = true)
         # get results and align them with the labels
         res = CSV.read(outpath, delim = "\t", DataFrame, header = [ "sequence_id", "score", "chimera", "chimera_from", "chimera_to", "model", "attributes"])
     end
@@ -221,7 +327,7 @@ function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Ve
     return res
 end
 
-function parse_attributes(attributes::String)
+function parse_attributes(attributes::AbstractString)
     attribute_dict::Dict{String, Any} = Dict("dqt" => missing, "dqm" => missing, "div" => missing, "L_Y" => missing, "L_N" => missing, "L_A" => missing, "R_Y" => missing, "R_N" => missing, "R_A" => missing, "L" => missing, "R" => missing, "why" => missing)
     if occursin(";", attributes)
         for attribute in [el for el in split(attributes, ";") if el != ""]
@@ -340,6 +446,23 @@ function CHMMera_ROC_curve(query_seqs::Vector{String}, labels, ref_seqs::Vector{
     return map(x-> x.FPR, rates), map(x-> x.TPR, rates), chimera_probs, cutoffs
 end
 
+function CHMMAIRRa_ROC_curve(assignments::DataFrame, labels, ref_seqs::Vector{String}, ref_names::Vector{String}; cutoff_interval = 0.01, receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", bw = true, ig_seqtype = "TCR", prior_probability = 0.05)
+    mutation_probabilities = Float64[]
+    if (receptor == "IG") & (! bw)
+        mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2]
+    elseif (receptor == "TCR") & ( ! bw)
+        mutation_probabilities = [0.005]
+    end
+    HMM_parameters = Dict("method" => bw ? "BW" : "DB", "mutation_probabilities" => mutation_probabilities, "prior_probability" => prior_probability, "base_mutation_probability" => 0.05)
+
+    res = CHMMAIRRa.detect_chimeras(ref_names, ref_seqs, assignments, gene, receptor = receptor, HMM_parameters = HMM_parameters)
+
+    assignments = leftjoin(assignments, res.out[!,["sequence_id", "$(gene)_chimera_probability", "$(gene)_chimeric", "$(gene)_threaded"]], on = :sequence_id)
+    cutoffs = collect(0:cutoff_interval:1.1)
+    rates = map(cutoff -> get_rates(assignments[!, "$(gene)_chimera_probability"] .>= cutoff, labels), cutoffs)
+    return map(x-> x.FPR, rates), map(x-> x.TPR, rates), assignments[!, "$(gene)_chimera_probability"], cutoffs, assignments
+end
+
 function AUC(TPRs::Vector{Float64}, FPRs::Vector{Float64})
     """Calculate AUC using trapezoids"""
     AUC = 0
@@ -350,8 +473,10 @@ function AUC(TPRs::Vector{Float64}, FPRs::Vector{Float64})
 end
 
 
-function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[])
-    curr_simdata = test_sets[(test_sets.shm1 .== shm1) .& (test_sets.shm2 .== shm2) .& (test_sets.location .== location) .& (test_sets.refset_name .== reference_set_name),:]
+
+
+# this one takes in sim seqs and names instead of assignments and will run CHMMera directly, instead of CHMMAIRRa
+function calculate_plot_four_methods_ROC(sim_seqs::Vector{String}, sim_seq_names::Vector{String}, label, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR")
     refnames, refseqs = reference_sets[reference_set_name]
     
     # Define all possible methods
@@ -371,25 +496,25 @@ function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String,
     
     # Compute and store CHMMera BW if included
     if include_chmmera_bw
-        CHMMera_BW_FPRs, CHMMera_BW_TPRs, CHMMera_BW_probs, CHMMera_BW_cutoffs = CHMMera_ROC_curve(curr_simdata.sequence, curr_simdata.label, refseqs, bw = true, prior_probability = prior_probability, mutation_probabilities = mutation_probabilities)
+        CHMMera_BW_FPRs, CHMMera_BW_TPRs, CHMMera_BW_probs, CHMMera_BW_cutoffs = CHMMera_ROC_curve(sim_seqs, label, refseqs, bw = true, prior_probability = prior_probability, mutation_probabilities = mutation_probabilities)
         push!(plot_fprs, CHMMera_BW_FPRs)
         push!(plot_tprs, CHMMera_BW_TPRs)
-        push!(plot_labels, "CHMMAIRRa BW")
+        push!(plot_labels, "CHMMAIRRa Baum-Welch")
         push!(plot_colors, method2color["CHMMAIRRa BW"])
     end
     
     # Compute and store CHMMera DB if included
     if include_chmmera_db
-        CHMMera_DB_FPRs, CHMMera_DB_TPRs, CHMMera_DB_probs, CHMMera_DB_cutoffs = CHMMera_ROC_curve(curr_simdata.sequence, curr_simdata.label, refseqs, bw = false, prior_probability = prior_probability, mutation_probabilities = mutation_probabilities)
+        CHMMera_DB_FPRs, CHMMera_DB_TPRs, CHMMera_DB_probs, CHMMera_DB_cutoffs = CHMMera_ROC_curve(sim_seqs, label, refseqs, bw = false, prior_probability = prior_probability, mutation_probabilities = mutation_probabilities)
         push!(plot_fprs, CHMMera_DB_FPRs)
         push!(plot_tprs, CHMMera_DB_TPRs)
-        push!(plot_labels, "CHMMAIRRa DB")
+        push!(plot_labels, "CHMMAIRRa Discretized Bayesian")
         push!(plot_colors, method2color["CHMMAIRRa DB"])
     end
     
     # Compute and store USEARCH if included
     if include_usearch
-        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(curr_simdata.sequence_id, curr_simdata.sequence, curr_simdata.label, refseqs)
+        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs)
         push!(plot_fprs, usearch_uchime_FPRs)
         push!(plot_tprs, usearch_uchime_TPRs)
         push!(plot_labels, "USEARCH uchime2_ref")
@@ -398,7 +523,201 @@ function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String,
     
     # Compute and store VSEARCH if included
     if include_vsearch
-        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(curr_simdata.sequence_id, curr_simdata.sequence, curr_simdata.label, refseqs)
+        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs)
+        push!(plot_fprs, vsearch_uchime_FPRs)
+        push!(plot_tprs, vsearch_uchime_TPRs)
+        push!(plot_labels, "VSEARCH uchime_ref")
+        push!(plot_colors, method2color["VSEARCH uchime_ref"])
+    end
+    
+    # Check that we have at least one method to plot
+    if isempty(plot_fprs)
+        error("All methods are excluded. At least one method must be included.")
+    end
+    
+    # Create the plot
+    p = Plots.plot(plot_fprs, plot_tprs,
+        title = title, 
+        labels = reshape(plot_labels, 1, :),
+        xlabel = "False positive rate", 
+        ylabel = "True positive rate", 
+        linecolor = reshape(plot_colors, 1, :),
+        aspect_ratio = 1.0, 
+        markerstrokewidth = 3, 
+        legend = :bottomright)
+    
+    Plots.plot!(p, [0,1], [0,1], color = :black, linestyle = :dash, label = "y = x")
+    
+    # Storage for annotations
+    annotation_x = Float64[]
+    annotation_y = Float64[]
+    annotation_labels = String[]
+    annotation_colors = []
+    
+    # Add individual cutoff points for CHMMera BW
+    if include_chmmera_bw
+        cf_ind = findfirst(x->x == CHMMera_cutoff, CHMMera_BW_cutoffs)
+        Plots.plot!(p, [CHMMera_BW_FPRs[cf_ind]], [CHMMera_BW_TPRs[cf_ind]], seriestype = :scatter, color = method2color["CHMMAIRRa BW"], label = nothing)
+        println("CHMMAIRRa BW cutoff: FPR $(CHMMera_BW_FPRs[cf_ind]) TPR $(CHMMera_BW_TPRs[cf_ind])")
+        push!(annotation_x, CHMMera_BW_FPRs[cf_ind])
+        push!(annotation_y, CHMMera_BW_TPRs[cf_ind])
+        push!(annotation_labels, "P>$(CHMMera_cutoff)")
+        push!(annotation_colors, method2color["CHMMAIRRa BW"])
+    end
+    
+    # Add individual cutoff points for CHMMera DB
+    if include_chmmera_db
+        cs_ind = findfirst(x->x == CHMMera_cutoff, CHMMera_DB_cutoffs)
+        Plots.plot!(p, [CHMMera_DB_FPRs[cs_ind]], [CHMMera_DB_TPRs[cs_ind]], seriestype = :scatter, color = method2color["CHMMAIRRa DB"], label = nothing)
+        println("CHMMAIRRa DB cutoff: FPR $(CHMMera_DB_FPRs[cs_ind]) TPR $(CHMMera_DB_TPRs[cs_ind])")
+        push!(annotation_x, CHMMera_DB_FPRs[cs_ind])
+        push!(annotation_y, CHMMera_DB_TPRs[cs_ind])
+        push!(annotation_labels, "P>$(CHMMera_cutoff)")
+        push!(annotation_colors, method2color["CHMMAIRRa DB"])
+    end
+    
+    # Add USEARCH cutoff points
+    if include_usearch
+        usearch_cutoff_names = ["sensitive", "balanced", "specific", "high_confidence"]
+        for cutoff_name in usearch_cutoff_names
+            fpr_val = usearch_uchime_results[cutoff_name].FPR
+            tpr_val = usearch_uchime_results[cutoff_name].TPR
+            push!(annotation_x, fpr_val)
+            push!(annotation_y, tpr_val)
+            push!(annotation_labels, cutoff_name)
+            push!(annotation_colors, method2color["USEARCH uchime2_ref"])
+        end
+        
+        Plots.plot!(p, [usearch_uchime_results["high_confidence"].FPR, usearch_uchime_results["specific"].FPR, usearch_uchime_results["sensitive"].FPR, usearch_uchime_results["balanced"].FPR],
+                [usearch_uchime_results["high_confidence"].TPR, usearch_uchime_results["specific"].TPR, usearch_uchime_results["sensitive"].TPR, usearch_uchime_results["balanced"].TPR], 
+                seriestype = :scatter, color = method2color["USEARCH uchime2_ref"], label = nothing)
+    end
+    
+    # Add VSEARCH cutoff points
+    if include_vsearch
+        u_ind = findfirst(x->x == vsearch_uchime_cutoff, vsearch_uchime_cutoffs)
+        if isnothing(u_ind)
+            u_ind = length(vsearch_uchime_TPRs)
+        end
+        Plots.plot!(p, [vsearch_uchime_FPRs[u_ind]], [vsearch_uchime_TPRs[u_ind]], seriestype = :scatter, color = method2color["VSEARCH uchime_ref"], label = nothing)
+        println("VSEARCH cutoff: FPR $(vsearch_uchime_FPRs[u_ind]) TPR $(vsearch_uchime_TPRs[u_ind])")
+        push!(annotation_x, vsearch_uchime_FPRs[u_ind])
+        push!(annotation_y, vsearch_uchime_TPRs[u_ind])
+        push!(annotation_labels, "score>$(vsearch_uchime_cutoff)")
+        push!(annotation_colors, method2color["VSEARCH uchime_ref"])
+    end
+    
+    # Add annotations with position adjustment
+    if !isempty(annotation_x)
+        annotation_x_adj = annotation_x .+ padding
+        annotation_y_adj = adjust_y_positions(annotation_x_adj, annotation_y, padding = padding)
+        for i in 1:length(annotation_x_adj)
+            annotate!(p, annotation_x_adj[i], annotation_y_adj[i], Plots.text(annotation_labels[i], annotation_colors[i], :left, 10))
+        end
+    end
+    
+    # Print results and AUCs for included methods
+    if include_usearch
+        print(usearch_uchime_results)
+        println("AUC for USEARCH uchime2_ref: $(AUC(usearch_uchime_TPRs,usearch_uchime_FPRs))")
+    end
+    
+    if include_chmmera_bw
+        println("AUC for CHMMAIRRa BW: $(AUC(CHMMera_BW_TPRs,CHMMera_BW_FPRs))")
+    end
+    
+    if include_chmmera_db
+        println("AUC for CHMMAIRRa DB: $(AUC(CHMMera_DB_TPRs,CHMMera_DB_FPRs))")
+    end
+    
+    if include_vsearch
+        println("AUC for VSEARCH uchime_ref: $(AUC(vsearch_uchime_TPRs,vsearch_uchime_FPRs))")
+    end
+    
+    return p
+end
+
+
+# spreads out a set of points based on their y coordinates
+# attempts to keep the y order while spreading, so the topmost point remains on top etc
+function adjust_y_positions(x::Vector, y::Vector; padding=0.05)
+    # adjust from top to bottom to preserve relative order
+    y_sortperm = reverse(sortperm(y))
+    y = y[y_sortperm]
+    positions = [(x[i], y[i]) for i in 1:length(x)]
+    adjusted = copy(y)
+    overlaps = true
+    # keep moving points until none overlap
+    while overlaps
+        overlaps = false
+        for i in 1:length(positions)
+            for j in 1:length(positions)
+                ydiff = adjusted[i] - adjusted[j]
+                # if the points are too close, push the one below down a bit
+                # distance to push depends on padding and existing distance between the points
+                if (i != j) & (ydiff >=0) & (ydiff < padding)
+                    adjusted[j] = adjusted[j] - (rand() * padding * (ydiff + 0.0001) ^ 2)
+                    overlaps = true
+                end
+            end
+        end
+    end
+    unsort_inds = sortperm(y_sortperm)
+    return adjusted[unsort_inds]
+end
+
+
+
+# this one requires IgBLAST assignments as input to run the full CHMMAIRRa method
+function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR")
+    curr_simdata = test_sets
+    refnames, refseqs = reference_sets[reference_set_name]
+    
+    # Define all possible methods
+    all_methods = ["CHMMAIRRa BW", "CHMMAIRRa DB", "USEARCH uchime2_ref", "VSEARCH uchime_ref"]
+    
+    # Determine which methods to include
+    include_chmmera_bw = !("CHMMAIRRa BW" in exclude_methods)
+    include_chmmera_db = !("CHMMAIRRa DB" in exclude_methods)
+    include_usearch = !("USEARCH uchime2_ref" in exclude_methods)
+    include_vsearch = !("VSEARCH uchime_ref" in exclude_methods)
+    
+    # Storage for plot data
+    plot_fprs = []
+    plot_tprs = []
+    plot_labels = []
+    plot_colors = []
+    
+    # Compute and store CHMMera BW if included
+    if include_chmmera_bw
+        CHMMera_BW_FPRs, CHMMera_BW_TPRs, CHMMera_BW_probs, CHMMera_BW_cutoffs  = CHMMAIRRa_ROC_curve(curr_simdata, curr_simdata.label, refseqs, refnames, receptor = receptor, gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq, bw = true, ig_seqtype = ig_seqtype, prior_probability = prior_probability)
+        push!(plot_fprs, CHMMera_BW_FPRs)
+        push!(plot_tprs, CHMMera_BW_TPRs)
+        push!(plot_labels, "CHMMAIRRa Baum-Welch")
+        push!(plot_colors, method2color["CHMMAIRRa BW"])
+    end
+    
+    # Compute and store CHMMera DB if included
+    if include_chmmera_db
+        CHMMera_DB_FPRs, CHMMera_DB_TPRs, CHMMera_DB_probs, CHMMera_DB_cutoffs = CHMMAIRRa_ROC_curve(curr_simdata, curr_simdata.label, refseqs, refnames, receptor = receptor, gene = gene, V_seq = V_seq, D_seq = D_seq, J_seq = J_seq, bw = false, ig_seqtype = ig_seqtype, prior_probability = prior_probability)
+        push!(plot_fprs, CHMMera_DB_FPRs)
+        push!(plot_tprs, CHMMera_DB_TPRs)
+        push!(plot_labels, "CHMMAIRRa Discretized Bayesian")
+        push!(plot_colors, method2color["CHMMAIRRa DB"])
+    end
+    
+    # Compute and store USEARCH if included
+    if include_usearch
+        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs)
+        push!(plot_fprs, usearch_uchime_FPRs)
+        push!(plot_tprs, usearch_uchime_TPRs)
+        push!(plot_labels, "USEARCH uchime2_ref")
+        push!(plot_colors, method2color["USEARCH uchime2_ref"])
+    end
+    
+    # Compute and store VSEARCH if included
+    if include_vsearch
+        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs)
         push!(plot_fprs, vsearch_uchime_FPRs)
         push!(plot_tprs, vsearch_uchime_TPRs)
         push!(plot_labels, "VSEARCH uchime_ref")

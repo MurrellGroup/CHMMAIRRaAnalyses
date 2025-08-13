@@ -8,6 +8,25 @@ function read_fasta(filepath::String)::Tuple{Vector{String}, Vector{String}}
     [uppercase(String(FASTX.FASTA.sequence(rec))) for rec in fasta_in]
 end
 
+function read_fastq(file_path::String)
+    sequence_ids, sequences, qualities = Vector{String}(undef, 0), Vector{String}(undef, 0), Vector{String}(undef, 0)
+    io = open(file_path, "r")
+    i = 1
+    for line in eachline(io)
+        if i % 4 == 1
+            push!(sequence_ids, strip(line[2:end]))
+        elseif i % 4 == 2
+            push!(sequences, strip(line))
+        elseif i % 4 == 0
+            push!(qualities, strip(line))
+        end
+        i += 1
+    end
+    close(io)
+    @assert length(sequence_ids) == length(sequences) == length(qualities)
+    return sequence_ids, sequences, qualities
+end
+
 function write_fasta(filepath::String, sequences::Vector{String}; seq_names = nothing)
     if seq_names === nothing
         seq_names = ["S$(i)" for i in 1:length(sequences)]
@@ -356,19 +375,19 @@ function library2chain(library::String)::String
     return ""
 end
 
-function run_igblastwrap_from_files(db_dir, fastq_path, out_path; sequence_type = "IG", human_gl_aux = nothing, threads = Base.Threads.nthreads())
-    output = IOBuffer()
-    run(pipeline(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(db_dir) $(fastq_path)`, output))
-    if out_path[end - 1 : end] == "gz"
-        open(GzipCompressorStream, out_path, "w") do io
-            write(io, take!(output))
-        end
-    else
-        open(out_path, "w") do io
-            write(io, take!(output))
-        end
-    end
-end
+#function run_igblastwrap_from_files(db_dir, fastq_path, out_path; sequence_type = "IG", human_gl_aux = nothing, threads = Base.Threads.nthreads())
+#    output = IOBuffer()
+#    run(pipeline(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(db_dir) $(fastq_path)`, output))
+#    if out_path[end - 1 : end] == "gz"
+#        open(GzipCompressorStream, out_path, "w") do io
+#            write(io, take!(output))
+#        end
+#    else
+#        open(out_path, "w") do io
+#            write(io, take!(output))
+#        end
+#    end
+#end
 
 function run_augment_from_files(db_dir, assignments_path, out_path)
     output = IOBuffer()
@@ -451,4 +470,98 @@ function discrete_agreement(x_arr, y_arr; threshold = 0.95)
     LR = sum((x_arr .> threshold) .& (y_arr .< threshold))
     LL = sum((x_arr .< threshold) .& (y_arr .< threshold))
     return (UR = Int(UR), UL = Int(UL), LR = Int(LR), LL = Int(LL), agreement = UR / (UR + UL + LR + LL))
+end
+
+
+# wrapper for igblastn for aligning Vs by adding artificial D and J regions
+function igblast_d(seqs::Vector{String}, names::Vector{String}, d_ref_seqs::Vector{String}, d_ref_names::Vector{String}; V_seq::String = "", J_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(V_seq, seq, J_seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", [V_seq], seq_names = ["V1"])
+        write_fasta("$(db_dir)/D.fasta", degap.(d_ref_seqs), seq_names = d_ref_names)
+        write_fasta("$(db_dir)/J.fasta", [J_seq], seq_names = ["J1"])
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1", "extend_align5end" => "", "extend_align3end" => "")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function igblast_j(seqs::Vector{String}, names::Vector{String}, j_ref_seqs::Vector{String}, j_ref_names::Vector{String}; V_seq::String = "", D_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(V_seq, D_seq, seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", [V_seq], seq_names = ["V1"])
+        write_fasta("$(db_dir)/D.fasta", [D_seq], seq_names = ["D1"])
+        write_fasta("$(db_dir)/J.fasta", degap.(j_ref_seqs), seq_names = j_ref_names)
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1", "extend_align5end" => "", "extend_align3end" => "")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function igblast_v(seqs::Vector{String}, names::Vector{String}, v_ref_seqs::Vector{String}, v_ref_names::Vector{String}; D_seq::String = "", J_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(seq, D_seq, J_seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", degap.(v_ref_seqs), seq_names = v_ref_names)
+        write_fasta("$(db_dir)/D.fasta", [D_seq], seq_names = ["D1"])
+        write_fasta("$(db_dir)/J.fasta", [J_seq], seq_names = ["J1"])
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function safe_divide(x, y)
+    if y != 0
+        return x/y
+    else 
+        return missing
+    end
+end
+
+function covered(alignment, germline_seq)
+    return safe_divide(length(replace(alignment, "-" =>"")) * 100.0, length(germline_seq))
+end
+
+function rand_nuc()
+    return rand(["A", "C", "G", "T"])
 end
