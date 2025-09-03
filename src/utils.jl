@@ -417,6 +417,64 @@ function run_filter_from_files(assignments_path, out_path)
     end
 end
 
+"""
+    column_entropy_msa(msa; alphabet=['A','C','G','T','N','-'], normalize=false)
+
+Compute Shannon entropy (in bits) per alignment column for a nucleotide MSA,
+**including gaps**. Returns a Vector{Float64} of length = alignment width.
+
+Arguments
+- msa :: Vector{<:AbstractString}  Multiple sequence alignment (all equal length).
+Keyword args
+- alphabet :: Vector{Char}         Symbols to count (default ['A','C','G','T','N','-']).
+- normalize :: Bool                If true, divide by log2(length(alphabet)) to get [0,1].
+
+Notes:
+- Sequences are uppercased and 'U' is converted to 'T'.
+- Any character not in `alphabet` is ignored (so consider including ambiguity codes you use).
+"""
+function column_entropy_msa(msa::Vector{<:AbstractString};
+                            alphabet::Vector{Char} = ['A','C','G','T','N','-'],
+                            normalize::Bool = false)
+
+    isempty(msa) && return Float64[]
+    L = length(msa[1])
+    @assert all(length(s) == L for s in msa) "All sequences must have the same length."
+
+    # Precompute char -> index map and max entropy
+    idx = Dict{Char,Int}(c => i for (i,c) in enumerate(alphabet))
+    Hmax = log2(length(alphabet))
+
+    # Counts per column as Matrix{Float64}: rows=symbols, cols=positions
+    counts = zeros(Float64, length(alphabet), L)
+
+    @inbounds for s in msa
+        @assert !occursin('\n', s) "Sequences must not contain newlines."
+        for (j, ch0) in enumerate(s)
+            ch = (ch0 == 'u' || ch0 == 'U') ? 'T' : uppercase(ch0)
+            if haskey(idx, ch)
+                counts[idx[ch], j] += 1.0
+            end
+        end
+    end
+
+    # Convert to entropy per column
+    H = similar(view(counts,1,:)) |> x -> zeros(Float64, size(counts,2))
+    N = length(msa) |> float
+    @inbounds for j in 1:L
+        col = @view counts[:, j]
+        # frequencies include gaps (since '-' is in alphabet)
+        Hj = 0.0
+        for p in col ./ N
+            if p > 0.0
+                Hj -= p * log2(p)
+            end
+        end
+        H[j] = normalize ? Hj / Hmax : Hj
+    end
+    return H
+end
+
 
 function smooth_entropy(alignment::Vector{String}, pseudocount=1.0)
     if isempty(alignment)
