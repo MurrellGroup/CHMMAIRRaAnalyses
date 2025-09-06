@@ -106,11 +106,8 @@ function add_illumina_errors(seqs::Vector{String}, prefix_nucs::Int64, suffix_nu
         cmd = `$(art_illumina_path) -k 0 -ss MSv3 -amp -p -i $(input_fasta) -o $(joinpath(mydir, "amplicon")) -f 1 -l 250`
         io = IOBuffer()
         run(pipeline(cmd, stdout=io, stderr=devnull))
-        cp("$(mydir)/amplicon1.fq", "/home/mchernys/Downloads/amplicon1.fq", force = true)
-        cp("$(mydir)/amplicon2.fq", "/home/mchernys/Downloads/amplicon2.fq", force = true)
         # 3. Merge generated reads
         merged_sequence_ids, merged_sequences, merged_qualities = read_fastq(merge_fastqs_from_files("$(mydir)/amplicon1.fq", "$(mydir)/amplicon2.fq", "$(mydir)/merged", pear = pear_path))
-        write_fasta("/home/mchernys/Downloads/merged.fasta", merged_sequences, seq_names = merged_sequence_ids)
         merged_sequences = [seq[total_prefix_length + 1 : end - total_suffix_length] for seq in merged_sequences]
         return merged_sequences
     end
@@ -301,10 +298,11 @@ end
 
 
 
-function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Vector{String}, db_seqs::Vector{String}; search::String = "usearch", mode = "sensitive")
+function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Vector{String}, db_seqs::Vector{String}; search::String = "usearch", mode = "sensitive", mindiv = 0.00001)
     """
     Runs uchime_ref and returns sequence scores
-    Note that query_names must be unique because we need them to sort the uchime_ref output
+    Note 1: query_names must be unique because we need them to sort the uchime_ref output
+    Note 2: I was running usearch using a docker container because usearch doesn't work on apple silicon. You may be able to rewrite the command in a simpler way. Binaries are over here https://drive5.com/usearch/download.html
     """
     local res
     mktempdir() do dir
@@ -314,7 +312,23 @@ function usearch_uchime2_ref_wrapper(query_names::Vector{String}, query_seqs::Ve
         outpath = joinpath(dir, "out.txt")
         write_fasta(db_fasta_path, degap.(db_seqs))
         write_fasta(query_fasta_path, degap.(query_seqs), seq_names = query_names)
-        cmd = `usearch -uchime2_ref $(query_fasta_path) -db $(db_fasta_path) -uchimeout $(outpath) -strand plus -mode $(mode)`
+        #cmd = `usearch -uchime2_ref $(query_fasta_path) -db $(db_fasta_path) -uchimeout $(outpath) -strand plus -mode $(mode)`
+        cmd = Cmd([
+            "docker", "run", "--rm", "--interactive", "--platform", "linux/amd64",
+            "--volume", "$(dir):/workdir", "--env", "ubuntu", "multiarch/crossbuild",
+            "/bin/bash", "-c", """
+            cd /workdir
+            # grab usearch binary
+            wget https://drive5.com/downloads/usearch11.0.667_i86linux32.gz
+            gunzip usearch11.0.667_i86linux32.gz
+            chmod +x usearch11.0.667_i86linux32
+
+            # run usearch
+            ./usearch11.0.667_i86linux32 -uchime2_ref queries.fasta -db V.fasta -uchimeout out.txt -strand plus -mode $(mode) -mindiv $(mindiv)
+            """
+        ])
+        
+        
         println(cmd)
         run(cmd)
         # get results and align them with the labels
@@ -349,7 +363,7 @@ function parse_attributes(attributes::AbstractString)
     return DataFrame(attribute_dict)
 end
 
-function vsearch_uchime_ref_wrapper(query_names::Vector{String}, query_seqs::Vector{String}, db_seqs::Vector{String}; vsearch::String = "vsearch")
+function vsearch_uchime_ref_wrapper(query_names::Vector{String}, query_seqs::Vector{String}, db_seqs::Vector{String}; vsearch::String = "vsearch", mindiv::Float64 = 0.8, mindiffs::Int = 3, xn::Int = 8)
     """
     Runs uchime_ref and returns sequence scores
     Note that query_names must be unique because we need them to sort the uchime_ref output
@@ -365,10 +379,10 @@ function vsearch_uchime_ref_wrapper(query_names::Vector{String}, query_seqs::Vec
         outpath = joinpath(dir, "out.txt")
         write_fasta(db_fasta_path, degap.(db_seqs))
         write_fasta(query_fasta_path, degap.(query_seqs), seq_names = query_names)
-        cmd = `conda run -n vsearch vsearch --uchime_ref $(query_fasta_path) --uchimeout $(outpath) --fasta_score --db $(db_fasta_path)`
+        cmd = `vsearch --uchime_ref $(query_fasta_path) --uchimeout $(outpath) --fasta_score --db $(db_fasta_path) --mindiv $(mindiv) --mindiffs $(mindiffs) --xn $(xn)`
         println(cmd)
         run(cmd)
-        cp(outpath, "/home/mchernys/Downloads/vsearch_uchime_out.txt", force = true)
+        cp(outpath, "/Users/march712/Downloads/vsearch_uchime_out.txt", force = true)
         # get results and align them with the labels
         res = CSV.read(outpath, delim = "\t", DataFrame, header = ["score", "sequence_id", "parent_A", "parent_B", "top_parent", "idQM", "idQA", "idQB", "idAB", "idQT", "LY", "LN", "LA", "RY", "RN", "RA", "div", "YN"])
     end
@@ -387,7 +401,7 @@ function get_rates(results, labels)
     return (TPR = conf.TP / (conf.TP + conf.FN), FNR = conf.FN / (conf.FN + conf.TP), TNR = conf.TN / (conf.TN + conf.FP), FPR = conf.FP / (conf.FP + conf.TN))
 end
 
-function usearch_uchime2_ref_ROC_curve(query_names::Vector{String}, query_seqs::Vector{String}, labels, ref_seqs::Vector{String}; mindiffs = 2, mindivt = 0.5, xa = 1, xn = 4, modes = ["high_confidence", "specific", "balanced", "sensitive"])
+function usearch_uchime2_ref_ROC_curve(query_names::Vector{String}, query_seqs::Vector{String}, labels, ref_seqs::Vector{String}; mindiffs = 2, mindivt = 0.5, xa = 1, xn = 4, modes = ["high_confidence", "specific", "balanced", "sensitive"], mindiv = 0.00001)
     """
     Generate an ROC curve plot for a set of query sequences using the CHMMera method by varying the chimeric probability threshold
     """
@@ -395,7 +409,7 @@ function usearch_uchime2_ref_ROC_curve(query_names::Vector{String}, query_seqs::
     # we'll want the last output from the loop, so we need to initialize the variables outside of the loop
     TPRs, FPRs, scores, cutoffs = zeros(0), zeros(0), zeros(0), zeros(0)
     for mode in modes
-        res = usearch_uchime2_ref_wrapper(query_names, query_seqs, ref_seqs, mode = mode)
+        res = usearch_uchime2_ref_wrapper(query_names, query_seqs, ref_seqs, mode = mode, mindiv = usearch_uchime2_mindiv)
         scores, chimera = res.score, res.chimera
         # gather TPRs and FPRs for different cutoffs
         cutoffs = collect(0:.01:maximum(scores))
@@ -419,12 +433,12 @@ function usearch_uchime2_ref_ROC_curve(query_names::Vector{String}, query_seqs::
     return FPRs, TPRs, scores, cutoffs, calls
 end
 
-function vsearch_uchime_ref_ROC_curve(query_names::Vector{String}, query_seqs::Vector{String}, labels, ref_seqs::Vector{String}; cutoff_interval = 0.01)
+function vsearch_uchime_ref_ROC_curve(query_names::Vector{String}, query_seqs::Vector{String}, labels, ref_seqs::Vector{String}; cutoff_interval = 0.01, mindiv = 0.8, mindiffs = 3, xn = 8)
     """
     Generate an ROC curve plot for a set of query sequences using the CHMMera method by varying the chimeric probability threshold
     """
     # get uchime_ref scores
-    scores = vsearch_uchime_ref_wrapper(query_names, query_seqs, ref_seqs)
+    scores = vsearch_uchime_ref_wrapper(query_names, query_seqs, ref_seqs, mindiv = vsearch_uchime_mindiv, mindiffs = vsearch_uchime_mindiffs)
     # gather TPRs and FPRs for different cutoffs
     @info "DONE WITH VSEARCH UCHIME"
     cutoffs = collect(0:cutoff_interval:maximum(scores))
@@ -476,7 +490,7 @@ end
 
 
 # this one takes in sim seqs and names instead of assignments and will run CHMMera directly, instead of CHMMAIRRa
-function calculate_plot_four_methods_ROC(sim_seqs::Vector{String}, sim_seq_names::Vector{String}, label, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR")
+function calculate_plot_four_methods_ROC(sim_seqs::Vector{String}, sim_seq_names::Vector{String}, label, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, vsearch_uchime_mindiv = 0.8, vsearch_uchime_mindiffs = 3, usearch_uchime2_mindiv = 0., title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR", vsearch_uchime_xn = 8)
     refnames, refseqs = reference_sets[reference_set_name]
     
     # Define all possible methods
@@ -493,6 +507,26 @@ function calculate_plot_four_methods_ROC(sim_seqs::Vector{String}, sim_seq_names
     plot_tprs = []
     plot_labels = []
     plot_colors = []
+    
+    # Compute and store VSEARCH if included
+    if include_vsearch
+        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs, mindiv = vsearch_uchime_mindiv, mindiffs = vsearch_uchime_mindiffs, xn = vsearch_uchime_xn)
+        push!(plot_fprs, vsearch_uchime_FPRs)
+        push!(plot_tprs, vsearch_uchime_TPRs)
+        push!(plot_labels, "VSEARCH uchime_ref")
+        push!(plot_colors, method2color["VSEARCH uchime_ref"])
+    end
+
+    # Compute and store USEARCH if included
+    if include_usearch
+        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs, mindiv = usearch_uchime2_mindiv)
+        push!(plot_fprs, usearch_uchime_FPRs)
+        push!(plot_tprs, usearch_uchime_TPRs)
+        push!(plot_labels, "USEARCH uchime2_ref")
+        push!(plot_colors, method2color["USEARCH uchime2_ref"])
+    end
+    
+
     
     # Compute and store CHMMera BW if included
     if include_chmmera_bw
@@ -512,23 +546,7 @@ function calculate_plot_four_methods_ROC(sim_seqs::Vector{String}, sim_seq_names
         push!(plot_colors, method2color["CHMMAIRRa DB"])
     end
     
-    # Compute and store USEARCH if included
-    if include_usearch
-        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs)
-        push!(plot_fprs, usearch_uchime_FPRs)
-        push!(plot_tprs, usearch_uchime_TPRs)
-        push!(plot_labels, "USEARCH uchime2_ref")
-        push!(plot_colors, method2color["USEARCH uchime2_ref"])
-    end
-    
-    # Compute and store VSEARCH if included
-    if include_vsearch
-        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(sim_seq_names, degap.(sim_seqs), label, refseqs)
-        push!(plot_fprs, vsearch_uchime_FPRs)
-        push!(plot_tprs, vsearch_uchime_TPRs)
-        push!(plot_labels, "VSEARCH uchime_ref")
-        push!(plot_colors, method2color["VSEARCH uchime_ref"])
-    end
+
     
     # Check that we have at least one method to plot
     if isempty(plot_fprs)
@@ -669,7 +687,7 @@ end
 
 
 # this one requires IgBLAST assignments as input to run the full CHMMAIRRa method
-function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR")
+function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String, reference_sets::Dict, reference_set_name::String, prior_probability::Float64, shm1::Float64, shm2::Float64; padding = 0.03, CHMMera_cutoff = 0.95, mutation_probabilities = [0.001, 0.005, 0.02, 0.04, 0.08, 0.12, 0.16, 0.2], vsearch_uchime_cutoff = 0.28, title = "", exclude_methods = String[], receptor = "TCR", gene::Char = 'v', V_seq = "", D_seq = "", J_seq = "", ig_seqtype = "TCR", vsearch_uchime_mindiv = 0.8, vsearch_uchime_mindiffs = 3, vsearch_uchime_xn = 8, usearch_uchime2_mindiv = 0.00001)
     curr_simdata = test_sets
     refnames, refseqs = reference_sets[reference_set_name]
     
@@ -687,6 +705,25 @@ function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String,
     plot_tprs = []
     plot_labels = []
     plot_colors = []
+
+
+    # Compute and store VSEARCH if included
+    if include_vsearch
+        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs, xn = vsearch_uchime_xn, mindiv = vsearch_uchime_mindiv, mindiffs = vsearch_uchime_mindiffs)
+        push!(plot_fprs, vsearch_uchime_FPRs)
+        push!(plot_tprs, vsearch_uchime_TPRs)
+        push!(plot_labels, "VSEARCH uchime_ref")
+        push!(plot_colors, method2color["VSEARCH uchime_ref"])
+    end
+
+    # Compute and store USEARCH if included
+    if include_usearch
+        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs, mindiv = usearch_uchime2_mindiv)
+        push!(plot_fprs, usearch_uchime_FPRs)
+        push!(plot_tprs, usearch_uchime_TPRs)
+        push!(plot_labels, "USEARCH uchime2_ref")
+        push!(plot_colors, method2color["USEARCH uchime2_ref"])
+    end
     
     # Compute and store CHMMera BW if included
     if include_chmmera_bw
@@ -706,23 +743,7 @@ function calculate_plot_four_methods_ROC(test_sets::DataFrame, location::String,
         push!(plot_colors, method2color["CHMMAIRRa DB"])
     end
     
-    # Compute and store USEARCH if included
-    if include_usearch
-        usearch_uchime_FPRs, usearch_uchime_TPRs, usearch_uchime_scores, usearch_uchime_cutoffs, usearch_uchime_results = usearch_uchime2_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs)
-        push!(plot_fprs, usearch_uchime_FPRs)
-        push!(plot_tprs, usearch_uchime_TPRs)
-        push!(plot_labels, "USEARCH uchime2_ref")
-        push!(plot_colors, method2color["USEARCH uchime2_ref"])
-    end
-    
-    # Compute and store VSEARCH if included
-    if include_vsearch
-        vsearch_uchime_FPRs, vsearch_uchime_TPRs, vsearch_uchime_scores, vsearch_uchime_cutoffs = vsearch_uchime_ref_ROC_curve(curr_simdata.sequence_id, degap.(curr_simdata.v_sequence_alignment), curr_simdata.label, refseqs)
-        push!(plot_fprs, vsearch_uchime_FPRs)
-        push!(plot_tprs, vsearch_uchime_TPRs)
-        push!(plot_labels, "VSEARCH uchime_ref")
-        push!(plot_colors, method2color["VSEARCH uchime_ref"])
-    end
+ 
     
     # Check that we have at least one method to plot
     if isempty(plot_fprs)

@@ -10,7 +10,6 @@ include("../src/simulate.jl")
 # INPUTS
 # Only inputs needed are databases, which are provided with the repository
 KITDB_dir = joinpath(@__DIR__, "../data/KI_TCR_DB_v0.0.1")  # See https://gkhlab.gitlab.io/tcr/sequences/
-OGRDB_dir = joinpath(@__DIR__, "../data/OGRDB_human_IGH_9") # See https://ogrdb.airr-community.org/germline_sets/Homo%20sapiens
 KI_TRB_dir = joinpath(KITDB_dir, "TRB")
 
 # OUTPUTS
@@ -19,25 +18,15 @@ output_dir = "../../data/simulated/"
 random_seed = 888
 
 
-
-
 rng = MersenneTwister(random_seed)
 variation_method = "art_illumina"
 
-OGRDB_json = JSON.parsefile(joinpath(OGRDB_dir, "Homo_sapiens_IGH_VDJ_rev_9_ex.json"))
-
-# generate synthetic IGHV, IGHD, IGHJ, TRBV, TRBD, TRBJ genotypes from OGRDB and KI
+# generate synthetic TRBV, TRBD, TRBJ genotypes from KI TCR DB
 # one allele per gene
 reference_sets = Dict()
 for gene in ["V", "D", "J"]
-    OGRDB_refnames, OGRDB_refseqs = read_fasta(joinpath(OGRDB_dir, "$(gene).fasta"));
-    # take only functional alleles
-    OGRDB_functional_alleles = [el["label"] for el in OGRDB_json["GermlineSet"][1]["allele_descriptions"] if el["functional"] & occursin("IGH$(gene)", el["label"])]
-    functional_inds = OGRDB_refnames .∈ Ref(OGRDB_functional_alleles)
     TRB_refnames, TRB_refseqs = read_fasta(joinpath(KI_TRB_dir, "$(gene).fasta"));
-    reference_sets["OGRDB_IGH$(gene)_human_one_allele_per_gene"] = simulate_genotype(OGRDB_refnames[functional_inds], OGRDB_refseqs[functional_inds], rng)
     reference_sets["KI_TRB$(gene)_one_allele_per_gene"] = simulate_genotype(TRB_refnames, TRB_refseqs, rng)
-    write_fasta(joinpath(output_dir, "IGH$(gene)_one_allele_per_gene.fasta"), reference_sets["OGRDB_IGH$(gene)_human_one_allele_per_gene"][2], seq_names = reference_sets["OGRDB_IGH$(gene)_human_one_allele_per_gene"][1])
     write_fasta(joinpath(output_dir, "TRB$(gene)_one_allele_per_gene.fasta"), reference_sets["KI_TRB$(gene)_one_allele_per_gene"][2], seq_names = reference_sets["KI_TRB$(gene)_one_allele_per_gene"][1])
 end
 
@@ -48,8 +37,6 @@ chimerism_rate = 0.05
 chimeric_seqs_n, nonchimeric_seqs_n = Int(floor(n_sequences * chimerism_rate)), Int(floor(n_sequences * (1 - chimerism_rate)))
 rng = MersenneTwister(random_seed)
 
-include("../src/utils.jl")
-include("../src/simulate.jl")
 V_seq = degap(reference_sets["KI_TRBV_one_allele_per_gene"][2][1])
 D_seq = degap(reference_sets["KI_TRBD_one_allele_per_gene"][2][1])
 J_seq = degap(reference_sets["KI_TRBJ_one_allele_per_gene"][2][2])
