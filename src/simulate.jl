@@ -382,7 +382,6 @@ function vsearch_uchime_ref_wrapper(query_names::Vector{String}, query_seqs::Vec
         cmd = `vsearch --uchime_ref $(query_fasta_path) --uchimeout $(outpath) --fasta_score --db $(db_fasta_path) --mindiv $(mindiv) --mindiffs $(mindiffs) --xn $(xn)`
         println(cmd)
         run(cmd)
-        cp(outpath, "/Users/march712/Downloads/vsearch_uchime_out.txt", force = true)
         # get results and align them with the labels
         res = CSV.read(outpath, delim = "\t", DataFrame, header = ["score", "sequence_id", "parent_A", "parent_B", "top_parent", "idQM", "idQA", "idQB", "idAB", "idQT", "LY", "LN", "LA", "RY", "RN", "RA", "div", "YN"])
     end
