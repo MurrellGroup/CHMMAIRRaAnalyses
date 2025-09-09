@@ -1,11 +1,30 @@
-using CSV, DataFrames, FASTX, Compose, Colors, MolecularEvolution, StringDistances, StringAlgorithms, Distributions, CodecZlib
+using CSV, DataFrames, FASTX, Compose, Colors, MolecularEvolution, StringDistances, StringAlgorithms, Distributions, CodecZlib, StatsBase
 
-function read_fasta(filepath::String)
+function read_fasta(filepath::String)::Tuple{Vector{String}, Vector{String}}
     reader = FASTX.FASTA.Reader(open(filepath, "r"))
     fasta_in = [record for record in reader]
     close(reader)
     return [String(FASTX.FASTA.description(rec)) for rec in fasta_in],
     [uppercase(String(FASTX.FASTA.sequence(rec))) for rec in fasta_in]
+end
+
+function read_fastq(file_path::String)
+    sequence_ids, sequences, qualities = Vector{String}(undef, 0), Vector{String}(undef, 0), Vector{String}(undef, 0)
+    io = open(file_path, "r")
+    i = 1
+    for line in eachline(io)
+        if i % 4 == 1
+            push!(sequence_ids, strip(line[2:end]))
+        elseif i % 4 == 2
+            push!(sequences, strip(line))
+        elseif i % 4 == 0
+            push!(qualities, strip(line))
+        end
+        i += 1
+    end
+    close(io)
+    @assert length(sequence_ids) == length(sequences) == length(qualities)
+    return sequence_ids, sequences, qualities
 end
 
 function write_fasta(filepath::String, sequences::Vector{String}; seq_names = nothing)
@@ -62,7 +81,7 @@ function fasttreedbl_nuc_wrapper(seqs::Vector{String}, seqnames::Vector{String};
    end
 end
 
-function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads())
+function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads(), parameters::Vector{String} = String[])::Tuple{Vector{String}, Vector{String}}
     # Find mafft executable
     mafft_path = if isnothing(mafft)
         Sys.which("mafft")
@@ -77,14 +96,50 @@ function mafft_wrapper(seqs::Vector{String}, seqnames::Vector{String}; mafft::Un
     mktempdir() do mydir
         input_fasta = joinpath(mydir, "sequences.fasta")
         write_fasta(input_fasta, degap.(seqs), seq_names = seqnames)
-        cmd = `$(mafft_path) --thread $(threads) $(input_fasta)`
+
+        cmd = [mafft_path, "--thread", string(threads)]
+        if length(parameters) > 0
+            push!(cmd, parameters...)
+        end
+        push!(cmd, input_fasta)
+        
         @info "Running $(cmd)"
         io = IOBuffer()
-        run(pipeline(cmd, stdout=io, stderr=devnull))
+        run(pipeline(Cmd(cmd), stdout=io, stderr=devnull))
         stdo = String(take!(io))
         results = split.(split(stdo, ">")[2:end], "\n", limit = 2)
         names = map(x->string(x[1]), results)
         seqs = [uppercase(replace(result[2], "\n" => "")) for result in results ]
+        return names, seqs
+    end
+end
+
+function muscle_wrapper(seqs::Vector{String}, seqnames::Vector{String}; muscle::Union{String, Nothing} = nothing, threads::Int = Base.Threads.nthreads(), parameters::Vector{String} = String[])::Tuple{Vector{String}, Vector{String}}
+    # Find muscle executable
+    muscle_path = if isnothing(muscle)
+        Sys.which("muscle")
+    else
+        muscle
+    end
+
+    if isnothing(muscle_path)
+        error("Could not find muscle executable. Please ensure muscle is installed and in your PATH, or provide the path.")
+    end
+
+    mktempdir() do mydir
+        input_fasta = joinpath(mydir, "sequences.fasta")
+        output_fasta = joinpath(mydir, "aligned.fasta")
+        write_fasta(input_fasta, degap.(seqs), seq_names = seqnames)
+        cmd = [muscle_path]
+        if length(parameters) > 0
+            push!(cmd, parameters...)
+        end
+        push!(cmd, ["-align", input_fasta, "-output", output_fasta, "-threads", string(threads)]...)
+        println(cmd)
+        @info "Running $(cmd)"
+        run(pipeline(Cmd(cmd), stderr=devnull))
+        names, seqs = read_fasta(output_fasta)
+        seqs = [uppercase(seq) for seq in seqs]
         return names, seqs
     end
 end
@@ -320,19 +375,19 @@ function library2chain(library::String)::String
     return ""
 end
 
-function run_igblastwrap_from_files(db_dir, fastq_path, out_path; sequence_type = "IG", human_gl_aux = nothing, threads = Base.Threads.nthreads())
-    output = IOBuffer()
-    run(pipeline(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(db_dir) $(fastq_path)`, output))
-    if out_path[end - 1 : end] == "gz"
-        open(GzipCompressorStream, out_path, "w") do io
-            write(io, take!(output))
-        end
-    else
-        open(out_path, "w") do io
-            write(io, take!(output))
-        end
-    end
-end
+#function run_igblastwrap_from_files(db_dir, fastq_path, out_path; sequence_type = "IG", human_gl_aux = nothing, threads = Base.Threads.nthreads())
+#    output = IOBuffer()
+#    run(pipeline(`conda run -n igdiscover igdiscover igblastwrap --sequence-type $(sequence_type) --aux $(human_gl_aux) --threads $(threads) $(db_dir) $(fastq_path)`, output))
+#    if out_path[end - 1 : end] == "gz"
+#        open(GzipCompressorStream, out_path, "w") do io
+#            write(io, take!(output))
+#        end
+#    else
+#        open(out_path, "w") do io
+#            write(io, take!(output))
+#        end
+#    end
+#end
 
 function run_augment_from_files(db_dir, assignments_path, out_path)
     output = IOBuffer()
@@ -360,4 +415,211 @@ function run_filter_from_files(assignments_path, out_path)
             write(io, take!(output))
         end
     end
+end
+
+"""
+    column_entropy_msa(msa; alphabet=['A','C','G','T','N','-'], normalize=false)
+
+Compute Shannon entropy (in bits) per alignment column for a nucleotide MSA,
+**including gaps**. Returns a Vector{Float64} of length = alignment width.
+
+Arguments
+- msa :: Vector{<:AbstractString}  Multiple sequence alignment (all equal length).
+Keyword args
+- alphabet :: Vector{Char}         Symbols to count (default ['A','C','G','T','N','-']).
+- normalize :: Bool                If true, divide by log2(length(alphabet)) to get [0,1].
+
+Notes:
+- Sequences are uppercased and 'U' is converted to 'T'.
+- Any character not in `alphabet` is ignored (so consider including ambiguity codes you use).
+"""
+function column_entropy_msa(msa::Vector{<:AbstractString};
+                            alphabet::Vector{Char} = ['A','C','G','T','N','-'],
+                            normalize::Bool = false)
+
+    isempty(msa) && return Float64[]
+    L = length(msa[1])
+    @assert all(length(s) == L for s in msa) "All sequences must have the same length."
+
+    # Precompute char -> index map and max entropy
+    idx = Dict{Char,Int}(c => i for (i,c) in enumerate(alphabet))
+    Hmax = log2(length(alphabet))
+
+    # Counts per column as Matrix{Float64}: rows=symbols, cols=positions
+    counts = zeros(Float64, length(alphabet), L)
+
+    @inbounds for s in msa
+        @assert !occursin('\n', s) "Sequences must not contain newlines."
+        for (j, ch0) in enumerate(s)
+            ch = (ch0 == 'u' || ch0 == 'U') ? 'T' : uppercase(ch0)
+            if haskey(idx, ch)
+                counts[idx[ch], j] += 1.0
+            end
+        end
+    end
+
+    # Convert to entropy per column
+    H = similar(view(counts,1,:)) |> x -> zeros(Float64, size(counts,2))
+    N = length(msa) |> float
+    @inbounds for j in 1:L
+        col = @view counts[:, j]
+        # frequencies include gaps (since '-' is in alphabet)
+        Hj = 0.0
+        for p in col ./ N
+            if p > 0.0
+                Hj -= p * log2(p)
+            end
+        end
+        H[j] = normalize ? Hj / Hmax : Hj
+    end
+    return H
+end
+
+
+function smooth_entropy(alignment::Vector{String}, pseudocount=1.0)
+    if isempty(alignment)
+        return Float64[]
+    end
+    
+    n_sites = length(alignment[1])
+    n_seqs = length(alignment)
+    entropies = Float64[]
+    
+    for site in 1:n_sites
+        # Extract characters at this site
+        site_chars = [alignment[i][site] for i in 1:n_seqs]
+        
+        # Count frequencies
+        counts = countmap(site_chars)
+        
+        # Add pseudocounts for all possible nucleotides
+        nucleotides = ['A', 'T', 'G', 'C']
+        total = n_seqs + length(nucleotides) * pseudocount
+        
+        entropy = 0.0
+        for nuc in nucleotides
+            freq = (get(counts, nuc, 0) + pseudocount) / total
+            entropy -= freq * log2(freq)
+        end
+        
+        push!(entropies, entropy)
+    end
+    
+    return entropies
+end
+
+function add_split_normpos_columns!(df::DataFrame, Vgene2length::Dict)::DataFrame
+    recombinations_mask = (.! ismissing.(df.recombinations_degapped)) .& df.chimeric
+    parsed_recombinations = parse_recombinations_string.(df.recombinations_degapped[recombinations_mask])
+    df[!,"from_split_normpos"] .= -1.0
+    df[!,"to_split_normpos"] .= -1.0
+    df[recombinations_mask,"from_split_normpos"] .=  map(x -> x[1].left_pos_degapped / Vgene2length[split(x[1].left_allele, "*")[1]], parsed_recombinations)
+    df[recombinations_mask,"to_split_normpos"] .= map(x -> x[1].right_pos_degapped / Vgene2length[split(x[1].right_allele, "*")[1]], parsed_recombinations)
+    return df
+end
+
+function seeded_subsample_inds(vec_length::Int, seed::Int, subsample::Int)::Vector
+    return shuffle(MersenneTwister(seed), 1:vec_length)[1:subsample]
+end
+
+function discrete_agreement(x_arr, y_arr; threshold = 0.95)
+    UR = sum((x_arr .> threshold) .& (y_arr .> threshold))
+    UL = sum((x_arr .< threshold) .& (y_arr .> threshold))
+    LR = sum((x_arr .> threshold) .& (y_arr .< threshold))
+    LL = sum((x_arr .< threshold) .& (y_arr .< threshold))
+    return (UR = Int(UR), UL = Int(UL), LR = Int(LR), LL = Int(LL), agreement = UR / (UR + UL + LR + LL))
+end
+
+
+# wrapper for igblastn for aligning Vs by adding artificial D and J regions
+function igblast_d(seqs::Vector{String}, names::Vector{String}, d_ref_seqs::Vector{String}, d_ref_names::Vector{String}; V_seq::String = "", J_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(V_seq, seq, J_seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", [V_seq], seq_names = ["V1"])
+        write_fasta("$(db_dir)/D.fasta", degap.(d_ref_seqs), seq_names = d_ref_names)
+        write_fasta("$(db_dir)/J.fasta", [J_seq], seq_names = ["J1"])
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1", "extend_align5end" => "", "extend_align3end" => "")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function igblast_j(seqs::Vector{String}, names::Vector{String}, j_ref_seqs::Vector{String}, j_ref_names::Vector{String}; V_seq::String = "", D_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(V_seq, D_seq, seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", [V_seq], seq_names = ["V1"])
+        write_fasta("$(db_dir)/D.fasta", [D_seq], seq_names = ["D1"])
+        write_fasta("$(db_dir)/J.fasta", degap.(j_ref_seqs), seq_names = j_ref_names)
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1", "extend_align5end" => "", "extend_align3end" => "")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function igblast_v(seqs::Vector{String}, names::Vector{String}, v_ref_seqs::Vector{String}, v_ref_names::Vector{String}; D_seq::String = "", J_seq::String = "", ig_seqtype::String = "TCR")
+    artifical_seqs = [string(seq, D_seq, J_seq) for seq in seqs]
+    assignments = mktempdir() do dir
+        db_dir = joinpath(dir, "db")
+        mkdir(db_dir)
+        write_fasta("$(db_dir)/V.fasta", degap.(v_ref_seqs), seq_names = v_ref_names)
+        write_fasta("$(db_dir)/D.fasta", [D_seq], seq_names = ["D1"])
+        write_fasta("$(db_dir)/J.fasta", [J_seq], seq_names = ["J1"])
+        write_fasta("$(dir)/query.fasta", artifical_seqs, seq_names = names)
+        touch("$(db_dir)/aux_file.aux")
+
+        run_igblast(
+            IgBLASTn,
+            "$(dir)/query.fasta",
+            "$(db_dir)/V.fasta",
+            "$(db_dir)/D.fasta",
+            "$(db_dir)/J.fasta",
+            "$(db_dir)/aux_file.aux",
+            "$(dir)/out.tsv",
+            additional_params = Dict("ig_seqtype" => ig_seqtype, "num_alignments_V" => "1", "num_alignments_D" => "1", "num_alignments_J" => "1")
+        )
+        return CSV.read("$(dir)/out.tsv", DataFrame, delim = "\t")
+    end
+    return assignments
+end
+
+function safe_divide(x, y)
+    if y != 0
+        return x/y
+    else 
+        return missing
+    end
+end
+
+function covered(alignment, germline_seq)
+    return safe_divide(length(replace(alignment, "-" =>"")) * 100.0, length(germline_seq))
+end
+
+function rand_nuc()
+    return rand(["A", "C", "G", "T"])
 end
