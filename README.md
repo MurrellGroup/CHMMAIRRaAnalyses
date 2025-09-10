@@ -16,13 +16,13 @@ Julia 1.10.5 for running the notebooks.
 	using Pkg; Pkg.activate("."); Pkg.instantiate()
 	```
 
-[USEARCH v11.0.667_i86linux32](drive5.com/usearch/) comparison method.
+[USEARCH v11.0.667_i86linux32](https://www.drive5.com/usearch/) comparison method.
 
-[VSEARCH v2.29.1_linux_x86_64](github.com/torognes/vsearch) comparison method.
+[VSEARCH v2.29.1_linux_x86_64](https://www.github.com/torognes/vsearch) comparison method.
 
 [IgDiscover v1.0.4](https://gitlab.com/gkhlab/igdiscover22) for preprocessing the real datasets.
 
-[MAFFT v7.490](mafft.cbrc.jp/alignment/software/) for reference database alignment.
+[MAFFT v7.490](https://mafft.cbrc.jp/alignment/server/index.html) for reference database alignment.
 
 [Muscle v5.3](https://anaconda.org/bioconda/muscle) for reference database alignment.
 
